@@ -1,0 +1,2 @@
+- [ ] fix auth bug in book-suite
+- [ ] look into bubbletea v2
