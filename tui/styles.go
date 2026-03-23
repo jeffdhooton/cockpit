@@ -37,7 +37,7 @@ var (
 	SelectedRow = lipgloss.NewStyle().Background(ColorSelectedBg)
 )
 
-// RenderPanel renders a bordered panel with a title in the top border.
+// RenderPanel renders a bordered panel with a title inside the border.
 func RenderPanel(title string, content string, width int, height int, focused bool) string {
 	borderColor := ColorBorder
 	if focused {
@@ -49,35 +49,18 @@ func RenderPanel(title string, content string, width int, height int, focused bo
 		titleStyle = AccentText.Bold(true)
 	}
 
-	border := lipgloss.RoundedBorder()
+	// Title is the first line of content — no border surgery
+	titledContent := titleStyle.Render(title) + "\n" + content
 
-	// Render panel WITHOUT top border — we build it manually with the title
+	border := lipgloss.RoundedBorder()
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		BorderTop(false).
 		Width(width - 2).
-		Height(height - 3). // -1 bottom border, -1 our manual top line, -1 padding
+		Height(height - 2).
 		Padding(0, 1)
 
-	body := style.Render(content)
-
-	// Build the top border line with the title embedded
-	renderedTitle := titleStyle.Render(" " + title + " ")
-	titleWidth := lipgloss.Width(renderedTitle)
-
-	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
-	topLeft := borderStyle.Render("╭")
-	topRight := borderStyle.Render("╮")
-	hBar := borderStyle.Render("─")
-
-	remaining := width - 2 - titleWidth
-	if remaining < 0 {
-		remaining = 0
-	}
-	topLine := topLeft + renderedTitle + strings.Repeat(hBar, remaining) + topRight
-
-	return topLine + "\n" + body
+	return style.Render(titledContent)
 }
 
 // Truncate truncates a string at the last word boundary before maxLen, appending "…".
