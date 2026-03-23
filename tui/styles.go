@@ -51,28 +51,27 @@ func RenderPanel(title string, content string, width int, height int, focused bo
 
 	border := lipgloss.RoundedBorder()
 
-	// Render panel WITHOUT top border — we'll build it manually
+	// Render panel WITHOUT top border — we build it manually with the title
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
 		BorderTop(false).
 		Width(width - 2).
-		Height(height - 2).
+		Height(height - 3). // -1 bottom border, -1 our manual top line, -1 padding
 		Padding(0, 1)
 
 	body := style.Render(content)
 
-	// Build the top border line manually with the title embedded
+	// Build the top border line with the title embedded
 	renderedTitle := titleStyle.Render(" " + title + " ")
 	titleWidth := lipgloss.Width(renderedTitle)
 
 	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
-	topLeft := borderStyle.Render(string(border.TopLeft))
-	topRight := borderStyle.Render(string(border.TopRight))
-	hBar := borderStyle.Render(string(border.Top))
+	topLeft := borderStyle.Render("╭")
+	topRight := borderStyle.Render("╮")
+	hBar := borderStyle.Render("─")
 
-	// Fill: corner + title + remaining horizontal bars + corner
-	remaining := width - 2 - titleWidth // -2 for corners
+	remaining := width - 2 - titleWidth
 	if remaining < 0 {
 		remaining = 0
 	}

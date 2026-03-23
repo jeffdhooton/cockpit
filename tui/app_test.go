@@ -9,83 +9,67 @@ import (
 
 func TestCalculateLayoutHeight40Plus(t *testing.T) {
 	l := CalculateLayout(100, 45, 3)
-	if l.SessionsH != 3 {
-		t.Errorf("SessionsH = %d, want 3", l.SessionsH)
+	if l.SessionsH < 5 {
+		t.Errorf("SessionsH = %d, want >= 5", l.SessionsH)
 	}
-	if l.ReposH != 5 { // min(3+2, 6) = 5
-		t.Errorf("ReposH = %d, want 5", l.ReposH)
+	if l.MiddleH < 4 {
+		t.Errorf("MiddleH = %d, want >= 4", l.MiddleH)
 	}
-	if l.BottomH != 6 {
-		t.Errorf("BottomH = %d, want 6", l.BottomH)
+	if l.BottomH < 4 {
+		t.Errorf("BottomH = %d, want >= 4", l.BottomH)
 	}
-	if l.KeyhintsH != 1 {
-		t.Errorf("KeyhintsH = %d, want 1", l.KeyhintsH)
-	}
-	// Today = 45 - 3 - 5 - 6 - 1 = 30
-	if l.TodayH != 30 {
-		t.Errorf("TodayH = %d, want 30", l.TodayH)
+	total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
+	if total != 45 {
+		t.Errorf("total height = %d, want 45", total)
 	}
 }
 
 func TestCalculateLayoutHeight30to39(t *testing.T) {
 	l := CalculateLayout(100, 35, 3)
-	if l.SessionsH != 2 {
-		t.Errorf("SessionsH = %d, want 2", l.SessionsH)
+	if l.SessionsH < 5 {
+		t.Errorf("SessionsH = %d, want >= 5", l.SessionsH)
 	}
-	if l.ReposH != 4 { // min(3+2, 4) = 4
-		t.Errorf("ReposH = %d, want 4", l.ReposH)
-	}
-	if l.BottomH != 4 {
-		t.Errorf("BottomH = %d, want 4", l.BottomH)
+	total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
+	if total != 35 {
+		t.Errorf("total height = %d, want 35", total)
 	}
 }
 
 func TestCalculateLayoutHeight24to29(t *testing.T) {
 	l := CalculateLayout(100, 26, 3)
-	if l.SessionsH != 2 {
-		t.Errorf("SessionsH = %d, want 2", l.SessionsH)
-	}
-	if l.ReposH != 3 { // min(3+2, 3) = 3
-		t.Errorf("ReposH = %d, want 3", l.ReposH)
-	}
-	if l.BottomH != 3 {
-		t.Errorf("BottomH = %d, want 3", l.BottomH)
+	total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
+	if total != 26 {
+		t.Errorf("total height = %d, want 26", total)
 	}
 }
 
 func TestCalculateLayoutHeightBelow24(t *testing.T) {
 	l := CalculateLayout(100, 20, 3)
-	if l.SessionsH != 1 {
-		t.Errorf("SessionsH = %d, want 1", l.SessionsH)
+	if l.SessionsH != 5 {
+		t.Errorf("SessionsH = %d, want 5 (floor)", l.SessionsH)
 	}
-	if l.ReposH != 1 {
-		t.Errorf("ReposH = %d, want 1", l.ReposH)
+	if l.MiddleH < 4 {
+		t.Errorf("MiddleH = %d, want >= 4 (floor)", l.MiddleH)
 	}
-	if l.BottomH != 3 {
-		t.Errorf("BottomH = %d, want 3", l.BottomH)
-	}
-}
-
-func TestCalculateLayoutWidthNarrow(t *testing.T) {
-	l := CalculateLayout(70, 40, 3)
-	if !l.StackBottom {
-		t.Error("expected StackBottom = true for width < 80")
-	}
-	if l.InboxW != 70 {
-		t.Errorf("InboxW = %d, want 70", l.InboxW)
+	if l.BottomH < 4 {
+		t.Errorf("BottomH = %d, want >= 4 (floor)", l.BottomH)
 	}
 }
 
-func TestCalculateLayoutWidthWide(t *testing.T) {
+func TestCalculateLayoutWidth(t *testing.T) {
 	l := CalculateLayout(100, 40, 3)
-	if l.StackBottom {
-		t.Error("expected StackBottom = false for width >= 80")
+	if l.LeftW != 50 {
+		t.Errorf("LeftW = %d, want 50", l.LeftW)
 	}
-	if l.InboxW != 50 {
-		t.Errorf("InboxW = %d, want 50", l.InboxW)
+	if l.RightW != 50 {
+		t.Errorf("RightW = %d, want 50", l.RightW)
 	}
-	if l.SignalsW != 50 {
-		t.Errorf("SignalsW = %d, want 50", l.SignalsW)
+}
+
+func TestCalculateLayoutWidthOdd(t *testing.T) {
+	l := CalculateLayout(101, 40, 3)
+	if l.LeftW+l.RightW != 101 {
+		t.Errorf("LeftW(%d) + RightW(%d) = %d, want 101", l.LeftW, l.RightW, l.LeftW+l.RightW)
 	}
 }
 
@@ -97,10 +81,6 @@ func TestMinimumTerminalWidth(t *testing.T) {
 	view := m.View()
 	if view == "" {
 		t.Error("expected non-empty view for narrow terminal")
-	}
-	// Should contain the "too narrow" message
-	if len(view) == 0 {
-		t.Error("view should not be empty")
 	}
 }
 
@@ -132,12 +112,10 @@ func TestFocusCycling(t *testing.T) {
 	m.width = 100
 	m.height = 40
 
-	// Default focus
 	if m.focused != PanelToday {
 		t.Errorf("default focus = %d, want PanelToday(%d)", m.focused, PanelToday)
 	}
 
-	// Tab cycles forward
 	m.handleNavKey(keyMsg("tab"))
 	if m.focused != PanelInbox {
 		t.Errorf("after tab from Today, focus = %d, want PanelInbox(%d)", m.focused, PanelInbox)
@@ -169,7 +147,6 @@ func TestTickTriggersSourceFetches(t *testing.T) {
 	m.width = 100
 	m.height = 40
 
-	// Simulate a localTickMsg
 	newModel, cmd := m.Update(localTickMsg{})
 	if cmd == nil {
 		t.Error("localTickMsg should return batch cmd for source fetches")
@@ -183,63 +160,17 @@ func TestCaptureModeEnterExit(t *testing.T) {
 	m.width = 100
 	m.height = 40
 
-	// Enter capture mode
 	m.handleNavKey(keyMsg("c"))
 	if m.mode != ModeCapture {
 		t.Errorf("mode = %d, want ModeCapture(%d)", m.mode, ModeCapture)
 	}
-	if m.focused != PanelInbox {
-		t.Errorf("focused = %d, want PanelInbox(%d)", m.focused, PanelInbox)
+	if m.focused != PanelToday {
+		t.Errorf("focused = %d, want PanelToday(%d)", m.focused, PanelToday)
 	}
 
-	// Exit capture mode
 	m.handleCaptureKey(keyMsg("esc"))
 	if m.mode != ModeNavigation {
 		t.Errorf("mode = %d, want ModeNavigation(%d)", m.mode, ModeNavigation)
-	}
-}
-
-func TestLayoutBoundaryWidths(t *testing.T) {
-	tests := []struct {
-		width       int
-		stackBottom bool
-	}{
-		{59, true},  // too narrow but StackBottom still set
-		{60, true},  // narrow
-		{79, true},  // still narrow
-		{80, false}, // standard
-		{99, false}, // still standard
-		{100, false}, // wide
-	}
-	for _, tt := range tests {
-		l := CalculateLayout(tt.width, 40, 3)
-		if l.StackBottom != tt.stackBottom {
-			t.Errorf("width=%d: StackBottom=%v, want %v", tt.width, l.StackBottom, tt.stackBottom)
-		}
-	}
-}
-
-func TestLayoutBoundaryHeights(t *testing.T) {
-	tests := []struct {
-		height    int
-		sessionsH int
-		bottomH   int
-	}{
-		{23, 1, 3},
-		{24, 2, 3},
-		{29, 2, 3},
-		{30, 2, 4},
-		{39, 2, 4},
-		{40, 3, 6},
-	}
-	for _, tt := range tests {
-		l := CalculateLayout(100, tt.height, 3)
-		if l.SessionsH != tt.sessionsH {
-			t.Errorf("height=%d: SessionsH=%d, want %d", tt.height, l.SessionsH, tt.sessionsH)
-		}
-		if l.BottomH != tt.bottomH {
-			t.Errorf("height=%d: BottomH=%d, want %d", tt.height, l.BottomH, tt.bottomH)
-		}
 	}
 }
 
@@ -249,13 +180,11 @@ func TestCaptureModeBlocksNavKeys(t *testing.T) {
 	m.width = 100
 	m.height = 40
 
-	// Enter capture mode
 	m.handleNavKey(keyMsg("c"))
 	if m.mode != ModeCapture {
 		t.Fatal("should be in capture mode")
 	}
 
-	// Tab should NOT cycle panels in capture mode
 	previousFocus := m.focused
 	m.handleKey(keyMsg("tab"))
 	if m.focused != previousFocus {

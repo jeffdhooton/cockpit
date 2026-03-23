@@ -37,55 +37,57 @@ const (
 
 // Layout holds calculated panel dimensions.
 type Layout struct {
-	SessionsH int
-	ReposH    int
-	TodayH    int
-	BottomH   int
+	SessionsH int // cards + preview
+	MiddleH   int // repos | today row height
+	BottomH   int // inbox | signals row height
 	KeyhintsH int
-	InboxW    int
-	SignalsW  int
-	StackBottom bool // true when bottom row stacks vertically
+	LeftW     int  // repos / inbox width
+	RightW    int  // today / signals width
 }
 
 // CalculateLayout computes panel sizes based on terminal dimensions.
 func CalculateLayout(width, height, repoCount int) Layout {
 	l := Layout{KeyhintsH: 1}
 
-	// Height tiers
+	// Sessions gets ~40% for cards + preview, middle and bottom split the rest
+	usable := height - l.KeyhintsH
+
 	switch {
 	case height >= 40:
-		l.SessionsH = 7
-		l.ReposH = min(repoCount+3, 12)
-		l.BottomH = 7
+		l.SessionsH = usable * 40 / 100
+		remaining := usable - l.SessionsH
+		l.MiddleH = remaining / 2
+		l.BottomH = remaining - l.MiddleH
 	case height >= 30:
-		l.SessionsH = 6
-		l.ReposH = min(repoCount+3, 9)
-		l.BottomH = 6
+		l.SessionsH = usable * 35 / 100
+		remaining := usable - l.SessionsH
+		l.MiddleH = remaining / 2
+		l.BottomH = remaining - l.MiddleH
 	case height >= 24:
-		l.SessionsH = 5
-		l.ReposH = min(repoCount+3, 6)
-		l.BottomH = 5
+		l.SessionsH = usable * 30 / 100
+		remaining := usable - l.SessionsH
+		l.MiddleH = remaining / 2
+		l.BottomH = remaining - l.MiddleH
 	default:
-		l.SessionsH = 1
-		l.ReposH = 1
-		l.BottomH = 3
+		l.SessionsH = 5
+		l.MiddleH = (usable - 5) / 2
+		l.BottomH = usable - 5 - l.MiddleH
 	}
 
-	// Today gets remaining space
-	l.TodayH = height - l.SessionsH - l.ReposH - l.BottomH - l.KeyhintsH
-	if l.TodayH < 4 {
-		l.TodayH = 4
+	// Floors
+	if l.SessionsH < 5 {
+		l.SessionsH = 5
+	}
+	if l.MiddleH < 4 {
+		l.MiddleH = 4
+	}
+	if l.BottomH < 4 {
+		l.BottomH = 4
 	}
 
-	// Width tiers for bottom row
-	if width < 80 {
-		l.StackBottom = true
-		l.InboxW = width
-		l.SignalsW = width
-	} else {
-		l.InboxW = width / 2
-		l.SignalsW = width - l.InboxW
-	}
+	// Width: 50/50 split for side-by-side panels
+	l.LeftW = width / 2
+	l.RightW = width - l.LeftW
 
 	return l
 }
@@ -99,12 +101,14 @@ type Model struct {
 	mode    Mode
 	layout  Layout
 
-	sessions SessionsModel
-	repos    ReposModel
-	tasks    TasksModel
-	inbox    InboxModel
-	signals  SignalsModel
-	github   *sources.GitHubStatus
+	sessions       SessionsModel
+	repos          ReposModel
+	tasks          TasksModel
+	inbox          InboxModel
+	signals        SignalsModel
+	github         *sources.GitHubStatus
+	sessionPreview string
+	lastPreviewSession string
 
 	staleThreshold time.Duration
 	transientErr   string
@@ -121,7 +125,7 @@ func NewModel(cfg *config.Config) Model {
 		sessions:       NewSessionsModel(),
 		repos:          NewReposModel(),
 		tasks:          NewTasksModel(),
-		inbox:          NewInboxModel(),
+		inbox:          InboxModel{Loading: true, FilePath: cfg.Obsidian.InboxFile},
 		signals:        NewSignalsModel(),
 		staleThreshold: staleThreshold,
 	}
@@ -135,10 +139,11 @@ type (
 	tasksDataMsg   struct{ Tasks []sources.Task }
 	inboxDataMsg   struct{ Items []sources.Task }
 	githubDataMsg  struct{ Status *sources.GitHubStatus }
-	sourceErrMsg   struct{ Source string; Err error }
-	localTickMsg   struct{}
-	remoteTickMsg  struct{}
-	clearErrMsg    struct{}
+	sourceErrMsg      struct{ Source string; Err error }
+	previewDataMsg    struct{ Content string; Session string }
+	localTickMsg      struct{}
+	remoteTickMsg     struct{}
+	clearErrMsg       struct{}
 )
 
 func (m Model) Init() tea.Cmd {
@@ -169,9 +174,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tmuxDataMsg:
-		m.sessions.Sessions = msg.Sessions
+		// Filter out the cockpit session itself
+		var filtered []sources.TmuxSession
+		for _, s := range msg.Sessions {
+			if s.Name != m.config.General.SessionName {
+				filtered = append(filtered, s)
+			}
+		}
+		m.sessions.Sessions = filtered
 		m.sessions.Loading = false
 		m.updateSignals()
+		// Fetch preview for currently selected session
+		cmds = append(cmds, m.fetchPreview())
+
+	case previewDataMsg:
+		if msg.Session == m.selectedSessionName() {
+			m.sessionPreview = msg.Content
+		}
 
 	case gitDataMsg:
 		m.repos.Repos = msg.Repos
@@ -237,7 +256,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.mode == ModeCapture {
 		if _, ok := msg.(tea.KeyMsg); ok {
 			var cmd tea.Cmd
-			m.inbox.TextInput, cmd = m.inbox.TextInput.Update(msg)
+			m.tasks.TextInput, cmd = m.tasks.TextInput.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -262,8 +281,14 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 		m.focused = (m.focused - 1 + panelCount) % panelCount
 	case "j":
 		m.cursorDown()
+		if m.focused == PanelSessions {
+			return m.fetchPreview()
+		}
 	case "k":
 		m.cursorUp()
+		if m.focused == PanelSessions {
+			return m.fetchPreview()
+		}
 	case "q":
 		return tea.Quit
 	case "r":
@@ -276,9 +301,9 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 		)
 	case "c":
 		m.mode = ModeCapture
-		m.focused = PanelInbox
-		m.inbox.Capturing = true
-		m.inbox.TextInput.Focus()
+		m.focused = PanelToday
+		m.tasks.Capturing = true
+		m.tasks.TextInput.Focus()
 		return nil
 	case "x":
 		if m.focused == PanelToday && len(m.tasks.Tasks) > 0 {
@@ -310,21 +335,21 @@ func (m *Model) handleCaptureKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeNavigation
-		m.inbox.Capturing = false
-		m.inbox.TextInput.Blur()
-		m.inbox.TextInput.Reset()
+		m.tasks.Capturing = false
+		m.tasks.TextInput.Blur()
+		m.tasks.TextInput.Reset()
 	case "enter":
-		text := m.inbox.TextInput.Value()
+		text := m.tasks.TextInput.Value()
 		if text != "" {
-			err := sources.AppendInbox(m.config.Obsidian.InboxFile, text)
+			err := sources.AppendInbox(m.config.Obsidian.TodayFile, text)
 			if err != nil {
 				return func() tea.Msg {
 					return sourceErrMsg{Source: "capture", Err: err}
 				}
 			}
-			m.inbox.TextInput.Reset()
-			// Re-fetch inbox to show the new item
-			return m.fetchInbox()
+			m.tasks.TextInput.Reset()
+			// Re-fetch tasks to show the new item
+			return m.fetchTasks()
 		}
 	}
 	return nil
@@ -392,46 +417,41 @@ func (m Model) View() string {
 			WarningText.Render("Terminal too narrow (need 60+ cols).\nResize or press q to quit."))
 	}
 
-	showLastCommit := m.width >= 80
+	showLastCommit := m.layout.LeftW >= 50
 
-	// Render panels
-	sessionsContent := m.sessions.View(m.width, m.layout.SessionsH, m.focused == PanelSessions)
+	// === Sessions panel (cards + preview) ===
+	sessionsContent := m.sessions.View(m.width, 4, m.focused == PanelSessions)
 	if m.width < 80 {
 		sessionsContent = m.sessions.CompactView(m.width, m.focused == PanelSessions)
 	}
+	// Append preview below the session cards
+	if m.sessionPreview != "" {
+		previewHeader := MutedText.Render("─── " + m.selectedSessionName() + " ")
+		sessionsContent += "\n" + previewHeader + "\n" + m.sessionPreview
+	}
 	sessionsPanel := RenderPanel("Sessions", sessionsContent, m.width, m.layout.SessionsH, m.focused == PanelSessions)
 
-	// Note: repos and tasks View methods use pointer receivers to adjust scroll.
-	// This is safe because View() is called on a local copy of the model in Bubbletea.
+	// === Middle row: Repos | Today (side by side) ===
 	repos := m.repos
 	reposPanel := RenderPanel("Repos",
-		repos.View(m.width, m.layout.ReposH, m.focused == PanelRepos, showLastCommit),
-		m.width, m.layout.ReposH, m.focused == PanelRepos)
+		repos.View(m.layout.LeftW, m.layout.MiddleH, m.focused == PanelRepos, showLastCommit),
+		m.layout.LeftW, m.layout.MiddleH, m.focused == PanelRepos)
 
 	tasks := m.tasks
 	tasksPanel := RenderPanel("Today",
-		tasks.View(m.width, m.layout.TodayH, m.focused == PanelToday),
-		m.width, m.layout.TodayH, m.focused == PanelToday)
+		tasks.View(m.layout.RightW, m.layout.MiddleH, m.focused == PanelToday),
+		m.layout.RightW, m.layout.MiddleH, m.focused == PanelToday)
 
-	// Bottom row
-	var bottomRow string
-	if m.layout.StackBottom {
-		inboxPanel := RenderPanel("Inbox",
-			m.inbox.View(m.layout.InboxW, m.layout.BottomH/2, m.focused == PanelInbox),
-			m.layout.InboxW, m.layout.BottomH/2, m.focused == PanelInbox)
-		signalsPanel := RenderPanel("Signals",
-			m.signals.View(m.layout.SignalsW, m.layout.BottomH/2, m.focused == PanelSignals),
-			m.layout.SignalsW, m.layout.BottomH/2, m.focused == PanelSignals)
-		bottomRow = lipgloss.JoinVertical(lipgloss.Left, inboxPanel, signalsPanel)
-	} else {
-		inboxPanel := RenderPanel("Inbox",
-			m.inbox.View(m.layout.InboxW, m.layout.BottomH, m.focused == PanelInbox),
-			m.layout.InboxW, m.layout.BottomH, m.focused == PanelInbox)
-		signalsPanel := RenderPanel("Signals",
-			m.signals.View(m.layout.SignalsW, m.layout.BottomH, m.focused == PanelSignals),
-			m.layout.SignalsW, m.layout.BottomH, m.focused == PanelSignals)
-		bottomRow = lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, signalsPanel)
-	}
+	middleRow := lipgloss.JoinHorizontal(lipgloss.Top, reposPanel, tasksPanel)
+
+	// === Bottom row: Inbox | Signals (side by side) ===
+	inboxPanel := RenderPanel("Notes",
+		m.inbox.View(m.layout.LeftW, m.layout.BottomH, m.focused == PanelInbox),
+		m.layout.LeftW, m.layout.BottomH, m.focused == PanelInbox)
+	signalsPanel := RenderPanel("Signals",
+		m.signals.View(m.layout.RightW, m.layout.BottomH, m.focused == PanelSignals),
+		m.layout.RightW, m.layout.BottomH, m.focused == PanelSignals)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, signalsPanel)
 
 	// Key hints
 	keyhints := KeyhintsView(m.mode, m.width)
@@ -441,8 +461,7 @@ func (m Model) View() string {
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		sessionsPanel,
-		reposPanel,
-		tasksPanel,
+		middleRow,
 		bottomRow,
 		keyhints,
 	)
@@ -508,6 +527,31 @@ func (m Model) localTick() tea.Cmd {
 func (m Model) remoteTick() tea.Cmd {
 	d := time.Duration(m.config.GitHub.RefreshInterval) * time.Second
 	return tea.Tick(d, func(time.Time) tea.Msg { return remoteTickMsg{} })
+}
+
+func (m Model) selectedSessionName() string {
+	if len(m.sessions.Sessions) == 0 {
+		return ""
+	}
+	return m.sessions.Sessions[m.sessions.Cursor].Name
+}
+
+func (m Model) fetchPreview() tea.Cmd {
+	name := m.selectedSessionName()
+	if name == "" {
+		return nil
+	}
+	maxLines := m.layout.SessionsH - 6 // cards take ~4 rows, leave rest for preview
+	if maxLines < 3 {
+		maxLines = 3
+	}
+	return func() tea.Msg {
+		content, err := sources.CapturePane(context.Background(), name, maxLines)
+		if err != nil {
+			return previewDataMsg{Content: MutedText.Render("(no preview available)"), Session: name}
+		}
+		return previewDataMsg{Content: content, Session: name}
+	}
 }
 
 // tmuxSwitch switches to an existing tmux session.

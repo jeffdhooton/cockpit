@@ -37,8 +37,8 @@ var initCmd = &cobra.Command{
 }
 
 var capCmd = &cobra.Command{
-	Use:   "cap [thought]",
-	Short: "Capture a thought to inbox",
+	Use:   "cap [task]",
+	Short: "Capture a task to today's list",
 	RunE:  runCap,
 }
 
@@ -171,7 +171,7 @@ func runCap(cmd *cobra.Command, args []string) error {
 
 	if len(args) > 0 {
 		text := strings.Join(args, " ")
-		if err := sources.AppendInbox(cfg.Obsidian.InboxFile, text); err != nil {
+		if err := sources.AppendInbox(cfg.Obsidian.TodayFile, text); err != nil {
 			return fmt.Errorf("failed to capture: %w", err)
 		}
 		fmt.Printf("Captured: %s\n", text)
@@ -190,7 +190,7 @@ func runCap(cmd *cobra.Command, args []string) error {
 		if text == "" {
 			break
 		}
-		if err := sources.AppendInbox(cfg.Obsidian.InboxFile, text); err != nil {
+		if err := sources.AppendInbox(cfg.Obsidian.TodayFile, text); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			continue
 		}

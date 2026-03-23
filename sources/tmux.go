@@ -55,3 +55,30 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 	}
 	return sessions, nil
 }
+
+// CapturePane returns the visible content of the active pane in a tmux session.
+func CapturePane(ctx context.Context, sessionName string, maxLines int) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
+	// Trim trailing blank lines, then limit to maxLines
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+
+	// Find last non-empty line
+	last := len(lines) - 1
+	for last > 0 && strings.TrimSpace(lines[last]) == "" {
+		last--
+	}
+	lines = lines[:last+1]
+
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, "\n"), nil
+}

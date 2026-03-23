@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/jhoot/cockpit/sources"
 )
 
@@ -12,10 +13,15 @@ type TasksModel struct {
 	Cursor       int
 	Loading      bool
 	ScrollOffset int
+	TextInput    textinput.Model
+	Capturing    bool
 }
 
 func NewTasksModel() TasksModel {
-	return TasksModel{Loading: true}
+	ti := textinput.New()
+	ti.Placeholder = "add a task..."
+	ti.CharLimit = 256
+	return TasksModel{Loading: true, TextInput: ti}
 }
 
 func (m *TasksModel) CursorUp() {
@@ -53,11 +59,24 @@ func (m *TasksModel) View(width, height int, focused bool) string {
 	if m.Loading {
 		return MutedText.Render("⠋ Loading tasks...")
 	}
-	if len(m.Tasks) == 0 {
-		return MutedText.Render("No tasks for today. Add some in your vault.")
+
+	// Reserve space for capture input
+	inputRows := 0
+	if m.Capturing || focused {
+		inputRows = 2
 	}
 
-	visibleRows := height - 2
+	if len(m.Tasks) == 0 && !m.Capturing {
+		content := MutedText.Render("No tasks yet. Press ") +
+			AccentText.Render("c") +
+			MutedText.Render(" to add one.")
+		if focused {
+			content += "\n\n" + MutedText.Render("> _")
+		}
+		return content
+	}
+
+	visibleRows := height - 2 - inputRows
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
@@ -102,6 +121,15 @@ func (m *TasksModel) View(width, height int, focused bool) string {
 	}
 	if end < len(m.Tasks) {
 		lines = append(lines, MutedText.Render("  ▼ more below"))
+	}
+
+	// Capture input line
+	if m.Capturing {
+		lines = append(lines, "")
+		lines = append(lines, "> "+m.TextInput.View())
+	} else if focused {
+		lines = append(lines, "")
+		lines = append(lines, MutedText.Render("> _"))
 	}
 
 	return strings.Join(lines, "\n")
