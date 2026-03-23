@@ -51,7 +51,7 @@ func fetchOneRepo(ctx context.Context, repo config.RepoConfig) GitRepoStatus {
 		status.Error = err
 		return status
 	}
-	status.DirtyCount = parsePortelainCount(porcelain)
+	status.DirtyCount = parsePorcelainCount(porcelain)
 	status.Dirty = status.DirtyCount > 0
 
 	// Unpushed commits
@@ -80,8 +80,8 @@ func gitCommand(ctx context.Context, repoPath string, args ...string) (string, e
 	return string(out), nil
 }
 
-// parsePortelainCount counts non-empty lines in git status --porcelain output.
-func parsePortelainCount(output string) int {
+// parsePorcelainCount counts non-empty lines in git status --porcelain output.
+func parsePorcelainCount(output string) int {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return 0

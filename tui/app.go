@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
+	"regexp"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,6 +12,8 @@ import (
 	"github.com/jhoot/cockpit/config"
 	"github.com/jhoot/cockpit/sources"
 )
+
+var validLabel = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // PanelID identifies a panel.
 type PanelID int
@@ -100,9 +104,9 @@ type Model struct {
 	tasks    TasksModel
 	inbox    InboxModel
 	signals  SignalsModel
+	github   *sources.GitHubStatus
 
 	staleThreshold time.Duration
-	err            error
 	transientErr   string
 	transientTimer int
 }
@@ -188,6 +192,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inbox.Loading = false
 
 	case githubDataMsg:
+		m.github = msg.Status
 		m.updateSignals()
 
 	case sourceErrMsg:
@@ -217,14 +222,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchGitHub(),
 			m.remoteTick(),
 		)
+
+	case tmuxSwitchResultMsg:
+		if msg.Err != nil {
+			m.transientErr = "⚠ tmux: " + msg.Err.Error()
+			m.transientTimer = 3
+			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		} else {
+			return m, tea.Quit
+		}
 	}
 
-	// Update text input if in capture mode
+	// Update text input if in capture mode — only forward key and blink messages
 	if m.mode == ModeCapture {
-		var cmd tea.Cmd
-		m.inbox.TextInput, cmd = m.inbox.TextInput.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
+		if _, ok := msg.(tea.KeyMsg); ok {
+			var cmd tea.Cmd
+			m.inbox.TextInput, cmd = m.inbox.TextInput.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 
@@ -306,6 +322,9 @@ func (m *Model) handleCaptureKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// tmuxSwitchResultMsg is sent after a tmux switch attempt.
+type tmuxSwitchResultMsg struct{ Err error }
+
 func (m *Model) handleEnter() tea.Cmd {
 	switch m.focused {
 	case PanelSessions:
@@ -313,10 +332,7 @@ func (m *Model) handleEnter() tea.Cmd {
 			name := m.sessions.Sessions[m.sessions.Cursor].Name
 			return func() tea.Msg {
 				err := tmuxSwitch(name)
-				if err != nil {
-					return sourceErrMsg{Source: "tmux", Err: err}
-				}
-				return tea.QuitMsg{}
+				return tmuxSwitchResultMsg{Err: err}
 			}
 		}
 	case PanelRepos:
@@ -324,10 +340,7 @@ func (m *Model) handleEnter() tea.Cmd {
 			repo := m.repos.Repos[m.repos.Cursor]
 			return func() tea.Msg {
 				err := tmuxJump(repo.Label, repo.Path)
-				if err != nil {
-					return sourceErrMsg{Source: "tmux", Err: err}
-				}
-				return tea.QuitMsg{}
+				return tmuxSwitchResultMsg{Err: err}
 			}
 		}
 	}
@@ -361,9 +374,7 @@ func (m *Model) cursorDown() {
 }
 
 func (m *Model) updateSignals() {
-	var github *sources.GitHubStatus
-	// signals model aggregates from latest data
-	m.signals.UpdateSignals(m.sessions.Sessions, m.repos.Repos, github, m.staleThreshold)
+	m.signals.UpdateSignals(m.sessions.Sessions, m.repos.Repos, m.github, m.staleThreshold)
 }
 
 func (m Model) View() string {
@@ -382,12 +393,16 @@ func (m Model) View() string {
 	}
 	sessionsPanel := RenderPanel("Sessions", sessionsContent, m.width, m.layout.SessionsH, m.focused == PanelSessions)
 
+	// Note: repos and tasks View methods use pointer receivers to adjust scroll.
+	// This is safe because View() is called on a local copy of the model in Bubbletea.
+	repos := m.repos
 	reposPanel := RenderPanel("Repos",
-		m.repos.View(m.width, m.layout.ReposH, m.focused == PanelRepos, showLastCommit),
+		repos.View(m.width, m.layout.ReposH, m.focused == PanelRepos, showLastCommit),
 		m.width, m.layout.ReposH, m.focused == PanelRepos)
 
+	tasks := m.tasks
 	tasksPanel := RenderPanel("Today",
-		m.tasks.View(m.width, m.layout.TodayH, m.focused == PanelToday),
+		tasks.View(m.width, m.layout.TodayH, m.focused == PanelToday),
 		m.width, m.layout.TodayH, m.focused == PanelToday)
 
 	// Bottom row
@@ -494,6 +509,9 @@ func tmuxSwitch(name string) error {
 
 // tmuxJump switches to or creates a tmux session for a repo.
 func tmuxJump(label, path string) error {
+	if !validLabel.MatchString(label) {
+		return fmt.Errorf("invalid session label %q: must be alphanumeric, hyphens, or underscores", label)
+	}
 	// Try switching first
 	if err := exec.Command("tmux", "switch-client", "-t", label).Run(); err == nil {
 		return nil

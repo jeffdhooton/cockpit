@@ -62,14 +62,14 @@ func RenderPanel(title string, content string, width int, height int, focused bo
 
 	panel := style.Render(content)
 
-	// Replace part of the top border with the title
+	// Replace part of the top border with the title using visible width
 	lines := strings.Split(panel, "\n")
-	if len(lines) > 0 && len(renderedTitle) < len(lines[0]) {
-		// Insert title after the first border character
+	titleVisibleWidth := lipgloss.Width(renderedTitle)
+	if len(lines) > 0 {
 		topLine := lines[0]
 		runes := []rune(topLine)
-		if len(runes) > 2 {
-			lines[0] = string(runes[:2]) + renderedTitle + string(runes[2+len([]rune(renderedTitle)):])
+		if len(runes) > 2+titleVisibleWidth {
+			lines[0] = string(runes[:2]) + renderedTitle + string(runes[2+titleVisibleWidth:])
 		}
 	}
 

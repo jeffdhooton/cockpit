@@ -40,7 +40,7 @@ func (m *ReposModel) AdjustScroll(visibleRows int) {
 	}
 }
 
-func (m ReposModel) View(width, height int, focused bool, showLastCommit bool) string {
+func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) string {
 	if m.Loading {
 		return MutedText.Render("⠋ Loading repos...")
 	}
@@ -78,6 +78,8 @@ func (m ReposModel) View(width, height int, focused bool, showLastCommit bool) s
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
+
+	m.AdjustScroll(visibleRows)
 
 	var lines []string
 	lines = append(lines, header)

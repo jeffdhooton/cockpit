@@ -23,9 +23,9 @@ func TestParsePortelainCount(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parsePortelainCount(tt.input)
+			got := parsePorcelainCount(tt.input)
 			if got != tt.expect {
-				t.Errorf("parsePortelainCount(%q) = %d, want %d", tt.input, got, tt.expect)
+				t.Errorf("parsePorcelainCount(%q) = %d, want %d", tt.input, got, tt.expect)
 			}
 		})
 	}

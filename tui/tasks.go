@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/jhoot/cockpit/sources"
@@ -50,7 +49,7 @@ func (m TasksModel) FirstUnchecked() int {
 	return 0
 }
 
-func (m TasksModel) View(width, height int, focused bool) string {
+func (m *TasksModel) View(width, height int, focused bool) string {
 	if m.Loading {
 		return MutedText.Render("⠋ Loading tasks...")
 	}
@@ -62,6 +61,8 @@ func (m TasksModel) View(width, height int, focused bool) string {
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
+
+	m.AdjustScroll(visibleRows)
 
 	start := m.ScrollOffset
 	end := start + visibleRows
@@ -84,7 +85,7 @@ func (m TasksModel) View(width, height int, focused bool) string {
 			checkbox = SuccessText.Render("[x]")
 			text = MutedText.Render(task.Text)
 		} else {
-			checkbox = fmt.Sprintf("[ ]")
+			checkbox = "[ ]"
 			text = task.Text
 		}
 

@@ -130,9 +130,6 @@ func fetchRepoCheck(ctx context.Context, repo config.RepoConfig) RepoCheck {
 				if pr.ReviewDecision == "REVIEW_REQUIRED" {
 					check.PRCount++
 				}
-				if pr.IsDraft {
-					// Count drafts at status level handled by caller
-				}
 			}
 		}
 	}

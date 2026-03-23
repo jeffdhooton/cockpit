@@ -70,13 +70,23 @@ func ToggleTask(filePath string, lineNum int) error {
 		return fmt.Errorf("line %d is not a task line", lineNum)
 	}
 
-	// Atomic write: tmp file then rename
+	// Atomic write: unique temp file then rename
 	dir := filepath.Dir(filePath)
-	tmp := filepath.Join(dir, ".cockpit_toggle.tmp")
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+	tmpFile, err := os.CreateTemp(dir, ".cockpit_toggle*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filePath)
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.WriteString(strings.Join(lines, "\n")); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, filePath)
 }
 
 // AppendInbox appends a new task line to the inbox file.

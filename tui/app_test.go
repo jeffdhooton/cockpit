@@ -243,6 +243,26 @@ func TestLayoutBoundaryHeights(t *testing.T) {
 	}
 }
 
+func TestCaptureModeBlocksNavKeys(t *testing.T) {
+	cfg := testConfig()
+	m := NewModel(cfg)
+	m.width = 100
+	m.height = 40
+
+	// Enter capture mode
+	m.handleNavKey(keyMsg("c"))
+	if m.mode != ModeCapture {
+		t.Fatal("should be in capture mode")
+	}
+
+	// Tab should NOT cycle panels in capture mode
+	previousFocus := m.focused
+	m.handleKey(keyMsg("tab"))
+	if m.focused != previousFocus {
+		t.Errorf("Tab changed focus in capture mode: was %d, now %d", previousFocus, m.focused)
+	}
+}
+
 func TestRefreshKey(t *testing.T) {
 	cfg := testConfig()
 	m := NewModel(cfg)
