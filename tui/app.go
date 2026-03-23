@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -74,9 +75,18 @@ func CalculateLayout(width, height, repoCount int) Layout {
 		l.BottomH = usable - 5 - l.MiddleH
 	}
 
-	// Floors
-	if l.SessionsH < 5 {
-		l.SessionsH = 5
+	// Sessions floor scales with terminal: border(2) + cards(4) + header(1) + preview
+	minSessions := 17 // 7 + 10 preview lines (small terminal)
+	switch {
+	case height >= 60:
+		minSessions = 37 // 7 + 30
+	case height >= 45:
+		minSessions = 27 // 7 + 20
+	case height >= 35:
+		minSessions = 22 // 7 + 15
+	}
+	if l.SessionsH < minSessions {
+		l.SessionsH = minSessions
 	}
 	if l.MiddleH < 4 {
 		l.MiddleH = 4
@@ -121,7 +131,7 @@ func NewModel(cfg *config.Config) Model {
 
 	m := Model{
 		config:         cfg,
-		focused:        PanelToday, // default focus
+		focused:        PanelSessions, // default focus
 		sessions:       NewSessionsModel(),
 		repos:          NewReposModel(),
 		tasks:          NewTasksModel(),
@@ -419,16 +429,43 @@ func (m Model) View() string {
 
 	showLastCommit := m.layout.LeftW >= 50
 
-	// === Sessions panel (cards + preview) ===
+	// === Sessions panel (cards + preview, fixed heights) ===
 	sessionsContent := m.sessions.View(m.width, 4, m.focused == PanelSessions)
 	if m.width < 80 {
 		sessionsContent = m.sessions.CompactView(m.width, m.focused == PanelSessions)
 	}
-	// Append preview below the session cards
+
+	// Preview gets a fixed max height — clamp the content
+	// Preview lines scale with terminal height
+	previewMaxLines := 10 // default for small terminals
+	switch {
+	case m.height >= 60:
+		previewMaxLines = 30
+	case m.height >= 45:
+		previewMaxLines = 20
+	case m.height >= 35:
+		previewMaxLines = 15
+	}
 	if m.sessionPreview != "" {
 		previewHeader := MutedText.Render("─── " + m.selectedSessionName() + " ")
-		sessionsContent += "\n" + previewHeader + "\n" + m.sessionPreview
+		lines := strings.Split(m.sessionPreview, "\n")
+		if len(lines) > previewMaxLines {
+			lines = lines[len(lines)-previewMaxLines:]
+		}
+		// Pad to exactly previewMaxLines so the panel height is stable
+		for len(lines) < previewMaxLines {
+			lines = append(lines, "")
+		}
+		sessionsContent += "\n" + previewHeader + "\n" + strings.Join(lines, "\n")
+	} else {
+		// Reserve the same space even with no preview so layout doesn't jump
+		emptyLines := make([]string, previewMaxLines+1) // +1 for header line
+		for i := range emptyLines {
+			emptyLines[i] = ""
+		}
+		sessionsContent += "\n" + strings.Join(emptyLines, "\n")
 	}
+
 	sessionsPanel := RenderPanel("Sessions", sessionsContent, m.width, m.layout.SessionsH, m.focused == PanelSessions)
 
 	// === Middle row: Repos | Today (side by side) ===
