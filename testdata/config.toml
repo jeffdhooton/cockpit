@@ -1,0 +1,26 @@
+[general]
+session_name = "cockpit"
+refresh_interval = 5
+
+[obsidian]
+vault_path = "/tmp/testvault"
+today_file = "/tmp/testvault/today.md"
+inbox_file = "/tmp/testvault/inbox.md"
+
+[[repos]]
+path = "/tmp/repo1"
+label = "repo-one"
+
+[[repos]]
+path = "/tmp/repo2"
+label = "repo-two"
+
+[github]
+enabled = true
+refresh_interval = 60
+
+[signals]
+stale_session_threshold = "24h"
+show_stale_sessions = true
+show_unpushed = true
+show_failing_ci = true
