@@ -199,6 +199,50 @@ func TestCaptureModeEnterExit(t *testing.T) {
 	}
 }
 
+func TestLayoutBoundaryWidths(t *testing.T) {
+	tests := []struct {
+		width       int
+		stackBottom bool
+	}{
+		{59, true},  // too narrow but StackBottom still set
+		{60, true},  // narrow
+		{79, true},  // still narrow
+		{80, false}, // standard
+		{99, false}, // still standard
+		{100, false}, // wide
+	}
+	for _, tt := range tests {
+		l := CalculateLayout(tt.width, 40, 3)
+		if l.StackBottom != tt.stackBottom {
+			t.Errorf("width=%d: StackBottom=%v, want %v", tt.width, l.StackBottom, tt.stackBottom)
+		}
+	}
+}
+
+func TestLayoutBoundaryHeights(t *testing.T) {
+	tests := []struct {
+		height    int
+		sessionsH int
+		bottomH   int
+	}{
+		{23, 1, 3},
+		{24, 2, 3},
+		{29, 2, 3},
+		{30, 2, 4},
+		{39, 2, 4},
+		{40, 3, 6},
+	}
+	for _, tt := range tests {
+		l := CalculateLayout(100, tt.height, 3)
+		if l.SessionsH != tt.sessionsH {
+			t.Errorf("height=%d: SessionsH=%d, want %d", tt.height, l.SessionsH, tt.sessionsH)
+		}
+		if l.BottomH != tt.bottomH {
+			t.Errorf("height=%d: BottomH=%d, want %d", tt.height, l.BottomH, tt.bottomH)
+		}
+	}
+}
+
 func TestRefreshKey(t *testing.T) {
 	cfg := testConfig()
 	m := NewModel(cfg)
