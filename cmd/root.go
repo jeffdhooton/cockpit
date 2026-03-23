@@ -136,7 +136,17 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Not inside tmux — create session and attach
+	// Not inside tmux — check if session exists, then attach or create
+	if err := exec.Command("tmux", "has-session", "-t", cfg.General.SessionName).Run(); err == nil {
+		// Session exists — just attach
+		attachCmd := exec.Command("tmux", "attach-session", "-t", cfg.General.SessionName)
+		attachCmd.Stdin = os.Stdin
+		attachCmd.Stdout = os.Stdout
+		attachCmd.Stderr = os.Stderr
+		return attachCmd.Run()
+	}
+
+	// Session doesn't exist — create and attach
 	cockpitBin, _ := os.Executable()
 	tmuxCmd := exec.Command("tmux", "new-session", "-s", cfg.General.SessionName, cockpitBin)
 	tmuxCmd.Stdin = os.Stdin

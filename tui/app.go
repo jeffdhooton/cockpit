@@ -54,17 +54,17 @@ func CalculateLayout(width, height, repoCount int) Layout {
 	// Height tiers
 	switch {
 	case height >= 40:
-		l.SessionsH = 3
-		l.ReposH = min(repoCount+2, 6)
-		l.BottomH = 6
+		l.SessionsH = 7
+		l.ReposH = min(repoCount+3, 12)
+		l.BottomH = 7
 	case height >= 30:
-		l.SessionsH = 2
-		l.ReposH = min(repoCount+2, 4)
-		l.BottomH = 4
+		l.SessionsH = 6
+		l.ReposH = min(repoCount+3, 9)
+		l.BottomH = 6
 	case height >= 24:
-		l.SessionsH = 2
-		l.ReposH = min(repoCount+2, 3)
-		l.BottomH = 3
+		l.SessionsH = 5
+		l.ReposH = min(repoCount+3, 6)
+		l.BottomH = 5
 	default:
 		l.SessionsH = 1
 		l.ReposH = 1
@@ -73,8 +73,8 @@ func CalculateLayout(width, height, repoCount int) Layout {
 
 	// Today gets remaining space
 	l.TodayH = height - l.SessionsH - l.ReposH - l.BottomH - l.KeyhintsH
-	if l.TodayH < 2 {
-		l.TodayH = 2
+	if l.TodayH < 4 {
+		l.TodayH = 4
 	}
 
 	// Width tiers for bottom row
@@ -228,9 +228,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.transientErr = "⚠ tmux: " + msg.Err.Error()
 			m.transientTimer = 3
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
-		} else {
-			return m, tea.Quit
 		}
+		// On success: do nothing. The tmux client switched away but cockpit
+		// keeps running in the background. User returns via prefix+S or `cockpit`.
 	}
 
 	// Update text input if in capture mode — only forward key and blink messages
@@ -289,8 +289,16 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 					return sourceErrMsg{Source: "toggle", Err: err}
 				}
 			}
-			// Update local state immediately
 			m.tasks.Tasks[m.tasks.Cursor].Done = !m.tasks.Tasks[m.tasks.Cursor].Done
+		} else if m.focused == PanelInbox && len(m.inbox.Items) > 0 {
+			item := m.inbox.Items[m.inbox.Cursor]
+			err := sources.ToggleTask(m.config.Obsidian.InboxFile, item.Line)
+			if err != nil {
+				return func() tea.Msg {
+					return sourceErrMsg{Source: "toggle", Err: err}
+				}
+			}
+			m.inbox.Items[m.inbox.Cursor].Done = !m.inbox.Items[m.inbox.Cursor].Done
 		}
 	case "enter":
 		return m.handleEnter()

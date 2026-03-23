@@ -37,7 +37,7 @@ var (
 	SelectedRow = lipgloss.NewStyle().Background(ColorSelectedBg)
 )
 
-// RenderPanel renders a bordered panel with a title.
+// RenderPanel renders a bordered panel with a title in the top border.
 func RenderPanel(title string, content string, width int, height int, focused bool) string {
 	borderColor := ColorBorder
 	if focused {
@@ -50,30 +50,35 @@ func RenderPanel(title string, content string, width int, height int, focused bo
 	}
 
 	border := lipgloss.RoundedBorder()
+
+	// Render panel WITHOUT top border — we'll build it manually
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		Width(width - 2). // account for border
-		Height(height - 2). // account for border
+		BorderTop(false).
+		Width(width - 2).
+		Height(height - 2).
 		Padding(0, 1)
 
-	// Render title into the top border
+	body := style.Render(content)
+
+	// Build the top border line manually with the title embedded
 	renderedTitle := titleStyle.Render(" " + title + " ")
+	titleWidth := lipgloss.Width(renderedTitle)
 
-	panel := style.Render(content)
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+	topLeft := borderStyle.Render(string(border.TopLeft))
+	topRight := borderStyle.Render(string(border.TopRight))
+	hBar := borderStyle.Render(string(border.Top))
 
-	// Replace part of the top border with the title using visible width
-	lines := strings.Split(panel, "\n")
-	titleVisibleWidth := lipgloss.Width(renderedTitle)
-	if len(lines) > 0 {
-		topLine := lines[0]
-		runes := []rune(topLine)
-		if len(runes) > 2+titleVisibleWidth {
-			lines[0] = string(runes[:2]) + renderedTitle + string(runes[2+titleVisibleWidth:])
-		}
+	// Fill: corner + title + remaining horizontal bars + corner
+	remaining := width - 2 - titleWidth // -2 for corners
+	if remaining < 0 {
+		remaining = 0
 	}
+	topLine := topLeft + renderedTitle + strings.Repeat(hBar, remaining) + topRight
 
-	return strings.Join(lines, "\n")
+	return topLine + "\n" + body
 }
 
 // Truncate truncates a string at the last word boundary before maxLen, appending "…".
