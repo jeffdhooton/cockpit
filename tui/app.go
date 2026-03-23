@@ -50,49 +50,23 @@ type Layout struct {
 func CalculateLayout(width, height, repoCount int) Layout {
 	l := Layout{KeyhintsH: 1}
 
-	// Sessions gets ~40% for cards + preview, middle and bottom split the rest
+	// Layout: sessions gets ~45%, middle ~25%, bottom ~30%
+	// These ratios keep all three sections usable at any terminal size
 	usable := height - l.KeyhintsH
 
-	switch {
-	case height >= 40:
-		l.SessionsH = usable * 40 / 100
-		remaining := usable - l.SessionsH
-		l.MiddleH = remaining / 2
-		l.BottomH = remaining - l.MiddleH
-	case height >= 30:
-		l.SessionsH = usable * 35 / 100
-		remaining := usable - l.SessionsH
-		l.MiddleH = remaining / 2
-		l.BottomH = remaining - l.MiddleH
-	case height >= 24:
-		l.SessionsH = usable * 30 / 100
-		remaining := usable - l.SessionsH
-		l.MiddleH = remaining / 2
-		l.BottomH = remaining - l.MiddleH
-	default:
-		l.SessionsH = 5
-		l.MiddleH = (usable - 5) / 2
-		l.BottomH = usable - 5 - l.MiddleH
-	}
+	l.SessionsH = usable * 45 / 100
+	l.MiddleH = usable * 25 / 100
+	l.BottomH = usable - l.SessionsH - l.MiddleH // remainder avoids rounding gaps
 
-	// Sessions floor scales with terminal: border(2) + cards(4) + header(1) + preview
-	minSessions := 17 // 7 + 10 preview lines (small terminal)
-	switch {
-	case height >= 60:
-		minSessions = 37 // 7 + 30
-	case height >= 45:
-		minSessions = 27 // 7 + 20
-	case height >= 35:
-		minSessions = 22 // 7 + 15
+	// Floors — every section needs a minimum to be usable
+	if l.SessionsH < 10 {
+		l.SessionsH = 10
 	}
-	if l.SessionsH < minSessions {
-		l.SessionsH = minSessions
+	if l.MiddleH < 6 {
+		l.MiddleH = 6
 	}
-	if l.MiddleH < 4 {
-		l.MiddleH = 4
-	}
-	if l.BottomH < 4 {
-		l.BottomH = 4
+	if l.BottomH < 5 {
+		l.BottomH = 5
 	}
 
 	// Width: 50/50 split for side-by-side panels
@@ -437,14 +411,15 @@ func (m Model) View() string {
 
 	// Preview gets a fixed max height — clamp the content
 	// Preview lines scale with terminal height
-	previewMaxLines := 10 // default for small terminals
+	// Preview lines scale with terminal — use most of the sessions panel
+	previewMaxLines := 5
 	switch {
 	case m.height >= 60:
-		previewMaxLines = 30
+		previewMaxLines = 25
 	case m.height >= 45:
-		previewMaxLines = 20
-	case m.height >= 35:
 		previewMaxLines = 15
+	case m.height >= 35:
+		previewMaxLines = 10
 	}
 	if m.sessionPreview != "" {
 		previewHeader := MutedText.Render("─── " + m.selectedSessionName() + " ")
