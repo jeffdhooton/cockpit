@@ -163,6 +163,51 @@ func TestQuitReturnsQuit(t *testing.T) {
 	}
 }
 
+func TestTickTriggersSourceFetches(t *testing.T) {
+	cfg := testConfig()
+	m := NewModel(cfg)
+	m.width = 100
+	m.height = 40
+
+	// Simulate a localTickMsg
+	newModel, cmd := m.Update(localTickMsg{})
+	if cmd == nil {
+		t.Error("localTickMsg should return batch cmd for source fetches")
+	}
+	_ = newModel
+}
+
+func TestCaptureModeEnterExit(t *testing.T) {
+	cfg := testConfig()
+	m := NewModel(cfg)
+	m.width = 100
+	m.height = 40
+
+	// Enter capture mode
+	m.handleNavKey(keyMsg("c"))
+	if m.mode != ModeCapture {
+		t.Errorf("mode = %d, want ModeCapture(%d)", m.mode, ModeCapture)
+	}
+	if m.focused != PanelInbox {
+		t.Errorf("focused = %d, want PanelInbox(%d)", m.focused, PanelInbox)
+	}
+
+	// Exit capture mode
+	m.handleCaptureKey(keyMsg("esc"))
+	if m.mode != ModeNavigation {
+		t.Errorf("mode = %d, want ModeNavigation(%d)", m.mode, ModeNavigation)
+	}
+}
+
+func TestRefreshKey(t *testing.T) {
+	cfg := testConfig()
+	m := NewModel(cfg)
+	cmd := m.handleNavKey(keyMsg("r"))
+	if cmd == nil {
+		t.Error("r key should return refresh cmd")
+	}
+}
+
 // helpers
 
 func testConfig() *config.Config {
