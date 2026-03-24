@@ -50,13 +50,21 @@ type Layout struct {
 func CalculateLayout(width, height, repoCount int) Layout {
 	l := Layout{KeyhintsH: 1}
 
-	// Layout: sessions gets ~45%, middle ~25%, bottom ~30%
-	// These ratios keep all three sections usable at any terminal size
+	// Layout ratios scale with terminal height
 	usable := height - l.KeyhintsH
 
-	l.SessionsH = usable * 45 / 100
-	l.MiddleH = usable * 25 / 100
-	l.BottomH = usable - l.SessionsH - l.MiddleH // remainder avoids rounding gaps
+	sessionsPct := 45
+	if height < 50 {
+		sessionsPct = 25
+	} else if height < 60 {
+		sessionsPct = 30
+	} else if height < 70 {
+		sessionsPct = 38
+	}
+
+	l.SessionsH = usable * sessionsPct / 100
+	l.MiddleH = usable * 30 / 100
+	l.BottomH = usable - l.SessionsH - l.MiddleH
 
 	// Floors — every section needs a minimum to be usable
 	if l.SessionsH < 10 {
@@ -411,15 +419,15 @@ func (m Model) View() string {
 
 	// Preview gets a fixed max height — clamp the content
 	// Preview lines scale with terminal height
-	// Preview lines scale with terminal — use most of the sessions panel
-	previewMaxLines := 5
+	// Preview lines scale with terminal
+	previewMaxLines := 3
 	switch {
-	case m.height >= 60:
+	case m.height >= 70:
 		previewMaxLines = 25
+	case m.height >= 55:
+		previewMaxLines = 12
 	case m.height >= 45:
-		previewMaxLines = 15
-	case m.height >= 35:
-		previewMaxLines = 10
+		previewMaxLines = 6
 	}
 	if m.sessionPreview != "" {
 		previewHeader := MutedText.Render("─── " + m.selectedSessionName() + " ")

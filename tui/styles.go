@@ -6,18 +6,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Tokyo Night color palette
+// Catppuccin Mocha color palette
 var (
-	ColorBg         = lipgloss.Color("#1a1b26")
-	ColorFg         = lipgloss.Color("#a9b1d6")
-	ColorAccent     = lipgloss.Color("#7aa2f7")
-	ColorSuccess    = lipgloss.Color("#9ece6a")
-	ColorWarning    = lipgloss.Color("#e0af68")
-	ColorError      = lipgloss.Color("#f7768e")
-	ColorMuted      = lipgloss.Color("#565f89")
-	ColorPurple     = lipgloss.Color("#bb9af7")
-	ColorSelectedBg = lipgloss.Color("#292e42")
-	ColorBorder     = lipgloss.Color("#3b4261")
+	ColorBg         = lipgloss.Color("#1e1e2e")
+	ColorFg         = lipgloss.Color("#cdd6f4")
+	ColorAccent     = lipgloss.Color("#89b4fa") // blue
+	ColorSuccess    = lipgloss.Color("#a6e3a1") // green
+	ColorWarning    = lipgloss.Color("#f9e2af") // yellow
+	ColorError      = lipgloss.Color("#f38ba8") // red
+	ColorMuted      = lipgloss.Color("#6c7086") // overlay0
+	ColorPurple     = lipgloss.Color("#cba6f7") // mauve
+	ColorSelectedBg = lipgloss.Color("#313244") // surface0
+	ColorBorder     = lipgloss.Color("#45475a") // surface1
 )
 
 // Reusable styles

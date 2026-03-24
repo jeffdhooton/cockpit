@@ -41,19 +41,10 @@ func (m SessionsModel) View(width, height int, focused bool) string {
 			AccentText.Render("tmux new -s <name>")
 	}
 
-	innerWidth := width - 4 // padding + border
-	if innerWidth < 10 {
-		innerWidth = 10
-	}
-	innerHeight := height - 2
-	if innerHeight < 1 {
-		innerHeight = 1
-	}
-
 	// Render session cards horizontally
 	var cards []string
 	for i, s := range m.Sessions {
-		card := m.renderCard(s, i == m.Cursor && focused, innerWidth)
+		card := m.renderCard(s, i == m.Cursor && focused)
 		cards = append(cards, card)
 	}
 
@@ -64,7 +55,7 @@ func (m SessionsModel) View(width, height int, focused bool) string {
 	return row
 }
 
-func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool, maxWidth int) string {
+func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
 	nameStyle := BoldText
 	if selected {
 		nameStyle = nameStyle.Foreground(ColorAccent)
@@ -78,14 +69,6 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool, maxWidth
 	idle := formatIdleTime(s.LastUsed)
 	info := fmt.Sprintf("%dw %s", s.Windows, MutedText.Render(idle))
 
-	cardWidth := 18
-	if cardWidth > maxWidth/max(len(m.Sessions), 1) {
-		cardWidth = maxWidth / max(len(m.Sessions), 1)
-	}
-	if cardWidth < 12 {
-		cardWidth = 12
-	}
-
 	border := lipgloss.RoundedBorder()
 	borderColor := ColorBorder
 	if selected {
@@ -95,7 +78,6 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool, maxWidth
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		Width(cardWidth).
 		Padding(0, 1).
 		MarginRight(1)
 
