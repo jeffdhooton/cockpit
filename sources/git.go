@@ -59,7 +59,12 @@ func fetchOneRepo(ctx context.Context, repo config.RepoConfig) GitRepoStatus {
 	if err == nil {
 		status.Unpushed = parseCount(strings.TrimSpace(unpushed))
 	}
-	// If no upstream, Unpushed stays 0
+
+	// Behind remote
+	behind, err := gitCommand(ctx, repo.Path, "rev-list", "--count", "HEAD..@{upstream}")
+	if err == nil {
+		status.Behind = parseCount(strings.TrimSpace(behind))
+	}
 
 	// Last commit message
 	lastCommit, err := gitCommand(ctx, repo.Path, "log", "-1", "--pretty=format:%s")

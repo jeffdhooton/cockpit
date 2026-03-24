@@ -30,38 +30,82 @@ func (m *SignalsModel) UpdateSignals(
 	sessions []sources.TmuxSession,
 	repos []sources.GitRepoStatus,
 	github *sources.GitHubStatus,
+	calendar []sources.CalendarEvent,
 	staleThreshold time.Duration,
 ) {
 	m.Loading = false
 	var signals []Signal
+
+	// --- Calendar (time-sensitive, always on top) ---
+
+	for _, evt := range calendar {
+		var msg string
+		if evt.MinutesOut <= 0 {
+			msg = fmt.Sprintf("%s — now", evt.Summary)
+		} else if evt.MinutesOut <= 5 {
+			msg = fmt.Sprintf("%s — in %dm", evt.Summary, evt.MinutesOut)
+		} else {
+			msg = fmt.Sprintf("%s — in %dm", evt.Summary, evt.MinutesOut)
+		}
+		level := "info"
+		if evt.MinutesOut <= 5 {
+			level = "error"
+		} else if evt.MinutesOut <= 15 {
+			level = "warning"
+		}
+		signals = append(signals, Signal{
+			Icon:    "📅",
+			Message: msg,
+			Level:   level,
+		})
+	}
+
+	// --- Errors (highest priority) ---
+
+	// Failing CI — per repo detail
+	if github != nil {
+		for _, rc := range github.RepoChecks {
+			if rc.CIStatus == "failing" {
+				signals = append(signals, Signal{
+					Icon:    "✗",
+					Message: fmt.Sprintf("%s — CI failing", rc.RepoLabel),
+					Level:   "error",
+				})
+			}
+		}
+	}
+
+	// --- Warnings ---
+
+	// Dirty repos (uncommitted changes)
+	for _, r := range repos {
+		if r.DirtyCount > 0 {
+			signals = append(signals, Signal{
+				Icon:    "●",
+				Message: fmt.Sprintf("%s — %d uncommitted file(s) on %s", r.Label, r.DirtyCount, r.Branch),
+				Level:   "warning",
+			})
+		}
+	}
 
 	// Unpushed commits
 	for _, r := range repos {
 		if r.Unpushed > 0 {
 			signals = append(signals, Signal{
 				Icon:    "↑",
-				Message: fmt.Sprintf("%s has %d unpushed commit(s)", r.Label, r.Unpushed),
+				Message: fmt.Sprintf("%s — %d unpushed commit(s) on %s", r.Label, r.Unpushed, r.Branch),
 				Level:   "warning",
 			})
 		}
 	}
 
-	// Failing CI
-	if github != nil && github.FailingChecks > 0 {
-		signals = append(signals, Signal{
-			Icon:    "✗",
-			Message: fmt.Sprintf("%d repo(s) with failing CI", github.FailingChecks),
-			Level:   "error",
-		})
-	}
-
-	// Stale sessions
-	for _, s := range sessions {
-		if !s.Attached && !s.LastUsed.IsZero() && time.Since(s.LastUsed) > staleThreshold {
+	// Behind remote
+	for _, r := range repos {
+		if r.Behind > 0 {
 			signals = append(signals, Signal{
-				Icon:    "⏱",
-				Message: fmt.Sprintf("session %q idle for %s", s.Name, formatIdleTime(s.LastUsed)),
-				Level:   "info",
+				Icon:    "↓",
+				Message: fmt.Sprintf("%s — %d commit(s) behind remote on %s", r.Label, r.Behind, r.Branch),
+				Level:   "warning",
 			})
 		}
 	}
@@ -73,6 +117,19 @@ func (m *SignalsModel) UpdateSignals(
 			Message: fmt.Sprintf("%d PR(s) awaiting your review", github.PRsAwaitingReview),
 			Level:   "warning",
 		})
+	}
+
+	// --- Info ---
+
+	// Stale sessions
+	for _, s := range sessions {
+		if !s.Attached && !s.LastUsed.IsZero() && time.Since(s.LastUsed) > staleThreshold {
+			signals = append(signals, Signal{
+				Icon:    "⏱",
+				Message: fmt.Sprintf("%s — idle for %s", s.Name, formatIdleTime(s.LastUsed)),
+				Level:   "info",
+			})
+		}
 	}
 
 	m.Signals = signals

@@ -7,52 +7,31 @@ import (
 	"github.com/jhoot/cockpit/config"
 )
 
-func TestCalculateLayoutHeight40Plus(t *testing.T) {
-	l := CalculateLayout(100, 45, 3)
-	if l.SessionsH < 5 {
-		t.Errorf("SessionsH = %d, want >= 5", l.SessionsH)
-	}
-	if l.MiddleH < 4 {
-		t.Errorf("MiddleH = %d, want >= 4", l.MiddleH)
-	}
-	if l.BottomH < 4 {
-		t.Errorf("BottomH = %d, want >= 4", l.BottomH)
-	}
-	total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
-	if total != 45 {
-		t.Errorf("total height = %d, want 45", total)
-	}
-}
-
-func TestCalculateLayoutHeight30to39(t *testing.T) {
-	l := CalculateLayout(100, 35, 3)
-	if l.SessionsH < 5 {
-		t.Errorf("SessionsH = %d, want >= 5", l.SessionsH)
-	}
-	total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
-	if total != 35 {
-		t.Errorf("total height = %d, want 35", total)
+func TestCalculateLayoutFloors(t *testing.T) {
+	// All sizes should meet minimum floors
+	for _, h := range []int{20, 26, 35, 45, 60, 80} {
+		l := CalculateLayout(100, h, 3)
+		if l.SessionsH < 10 {
+			t.Errorf("height=%d: SessionsH = %d, want >= 10", h, l.SessionsH)
+		}
+		if l.MiddleH < 6 {
+			t.Errorf("height=%d: MiddleH = %d, want >= 6", h, l.MiddleH)
+		}
+		if l.BottomH < 5 {
+			t.Errorf("height=%d: BottomH = %d, want >= 5", h, l.BottomH)
+		}
+		if l.KeyhintsH != 1 {
+			t.Errorf("height=%d: KeyhintsH = %d, want 1", h, l.KeyhintsH)
+		}
 	}
 }
 
-func TestCalculateLayoutHeight24to29(t *testing.T) {
-	l := CalculateLayout(100, 26, 3)
-	total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
-	if total != 26 {
-		t.Errorf("total height = %d, want 26", total)
-	}
-}
-
-func TestCalculateLayoutHeightBelow24(t *testing.T) {
-	l := CalculateLayout(100, 20, 3)
-	if l.SessionsH != 5 {
-		t.Errorf("SessionsH = %d, want 5 (floor)", l.SessionsH)
-	}
-	if l.MiddleH < 4 {
-		t.Errorf("MiddleH = %d, want >= 4 (floor)", l.MiddleH)
-	}
-	if l.BottomH < 4 {
-		t.Errorf("BottomH = %d, want >= 4 (floor)", l.BottomH)
+func TestCalculateLayoutScaling(t *testing.T) {
+	// Bigger terminals should give sessions more space
+	small := CalculateLayout(100, 45, 3)
+	big := CalculateLayout(100, 80, 3)
+	if big.SessionsH <= small.SessionsH {
+		t.Errorf("bigger terminal should have larger sessions: small=%d big=%d", small.SessionsH, big.SessionsH)
 	}
 }
 
@@ -112,23 +91,22 @@ func TestFocusCycling(t *testing.T) {
 	m.width = 100
 	m.height = 40
 
-	if m.focused != PanelToday {
-		t.Errorf("default focus = %d, want PanelToday(%d)", m.focused, PanelToday)
-	}
-
-	m.handleNavKey(keyMsg("tab"))
-	if m.focused != PanelInbox {
-		t.Errorf("after tab from Today, focus = %d, want PanelInbox(%d)", m.focused, PanelInbox)
-	}
-
-	m.handleNavKey(keyMsg("tab"))
-	if m.focused != PanelSignals {
-		t.Errorf("after 2 tabs, focus = %d, want PanelSignals(%d)", m.focused, PanelSignals)
-	}
-
-	m.handleNavKey(keyMsg("tab"))
 	if m.focused != PanelSessions {
-		t.Errorf("after 3 tabs, focus = %d, want PanelSessions(%d)", m.focused, PanelSessions)
+		t.Errorf("default focus = %d, want PanelSessions(%d)", m.focused, PanelSessions)
+	}
+
+	// Tab cycles through all panels
+	m.handleNavKey(keyMsg("tab"))
+	if m.focused != PanelRepos {
+		t.Errorf("after 1 tab, focus = %d, want PanelRepos(%d)", m.focused, PanelRepos)
+	}
+
+	// Full cycle back to start
+	for i := 0; i < 4; i++ {
+		m.handleNavKey(keyMsg("tab"))
+	}
+	if m.focused != PanelSessions {
+		t.Errorf("after full cycle, focus = %d, want PanelSessions(%d)", m.focused, PanelSessions)
 	}
 }
 

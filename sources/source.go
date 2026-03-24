@@ -18,6 +18,7 @@ type GitRepoStatus struct {
 	Dirty      bool
 	DirtyCount int
 	Unpushed   int
+	Behind     int
 	LastCommit string
 	Error      error
 }
