@@ -54,7 +54,7 @@ func TestCalculateLayoutWidthOdd(t *testing.T) {
 
 func TestMinimumTerminalWidth(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 50
 	m.height = 40
 	view := m.View()
@@ -87,7 +87,7 @@ func TestTruncate(t *testing.T) {
 
 func TestFocusCycling(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
 
@@ -112,7 +112,7 @@ func TestFocusCycling(t *testing.T) {
 
 func TestQuitReturnsQuit(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	cmd := m.handleNavKey(keyMsg("q"))
 	if cmd == nil {
 		t.Error("expected quit cmd")
@@ -121,7 +121,7 @@ func TestQuitReturnsQuit(t *testing.T) {
 
 func TestTickTriggersSourceFetches(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
 
@@ -134,7 +134,7 @@ func TestTickTriggersSourceFetches(t *testing.T) {
 
 func TestCaptureModeEnterExit(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
 
@@ -154,7 +154,7 @@ func TestCaptureModeEnterExit(t *testing.T) {
 
 func TestCaptureModeBlocksNavKeys(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
 
@@ -172,7 +172,7 @@ func TestCaptureModeBlocksNavKeys(t *testing.T) {
 
 func TestRefreshKey(t *testing.T) {
 	cfg := testConfig()
-	m := NewModel(cfg)
+	m := NewModel(cfg, "/tmp/config.toml")
 	cmd := m.handleNavKey(keyMsg("r"))
 	if cmd == nil {
 		t.Error("r key should return refresh cmd")

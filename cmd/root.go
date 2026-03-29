@@ -122,7 +122,7 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		currentSession, _ := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
 		if strings.TrimSpace(string(currentSession)) == cfg.General.SessionName {
 			// We're in the cockpit session — run TUI
-			return runTUI(cfg)
+			return runTUI(cfg, path)
 		}
 		// In a different session — switch to cockpit session
 		if err := exec.Command("tmux", "switch-client", "-t", cfg.General.SessionName).Run(); err != nil {
@@ -155,8 +155,8 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	return tmuxCmd.Run()
 }
 
-func runTUI(cfg *config.Config) error {
-	m := tui.NewModel(cfg)
+func runTUI(cfg *config.Config, configPath string) error {
+	m := tui.NewModel(cfg, configPath)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

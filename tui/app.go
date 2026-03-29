@@ -3,11 +3,14 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jhoot/cockpit/config"
@@ -34,6 +37,7 @@ type Mode int
 const (
 	ModeNavigation Mode = iota
 	ModeCapture
+	ModeNewSession
 )
 
 // Layout holds calculated panel dimensions.
@@ -86,12 +90,13 @@ func CalculateLayout(width, height, repoCount int) Layout {
 
 // Model is the root Bubbletea model.
 type Model struct {
-	config  *config.Config
-	width   int
-	height  int
-	focused PanelID
-	mode    Mode
-	layout  Layout
+	config     *config.Config
+	configPath string
+	width      int
+	height     int
+	focused    PanelID
+	mode       Mode
+	layout     Layout
 
 	sessions       SessionsModel
 	repos          ReposModel
@@ -106,21 +111,34 @@ type Model struct {
 	staleThreshold time.Duration
 	transientErr   string
 	transientTimer int
+
+	// New session dialog state
+	newSessionInput textinput.Model
+	newSessionStep  int    // 0=path, 1=label confirm
+	newSessionPath  string // expanded path from step 0
+	newSessionErr   string // inline validation error
 }
 
 // NewModel creates a new root model with the given config.
-func NewModel(cfg *config.Config) Model {
+func NewModel(cfg *config.Config, configPath string) Model {
 	staleThreshold, _ := time.ParseDuration(cfg.Signals.StaleSessionThreshold)
 
+	ti := textinput.New()
+	ti.Placeholder = "~/workspace/my-project"
+	ti.CharLimit = 512
+	ti.Width = 50
+
 	m := Model{
-		config:         cfg,
-		focused:        PanelSessions, // default focus
-		sessions:       NewSessionsModel(),
-		repos:          NewReposModel(),
-		tasks:          NewTasksModel(),
-		inbox:          InboxModel{Loading: true, FilePath: cfg.Obsidian.InboxFile},
-		signals:        NewSignalsModel(),
-		staleThreshold: staleThreshold,
+		config:          cfg,
+		configPath:      configPath,
+		focused:         PanelSessions, // default focus
+		sessions:        NewSessionsModel(),
+		repos:           NewReposModel(),
+		tasks:           NewTasksModel(),
+		inbox:           InboxModel{Loading: true, FilePath: cfg.Obsidian.InboxFile},
+		signals:         NewSignalsModel(),
+		staleThreshold:  staleThreshold,
+		newSessionInput: ti,
 	}
 	return m
 }
@@ -135,9 +153,10 @@ type (
 	calendarDataMsg  struct{ Events []sources.CalendarEvent }
 	sourceErrMsg     struct{ Source string; Err error }
 	previewDataMsg    struct{ Content string; Session string }
-	localTickMsg      struct{}
-	remoteTickMsg     struct{}
-	clearErrMsg       struct{}
+	localTickMsg        struct{}
+	remoteTickMsg       struct{}
+	clearErrMsg         struct{}
+	configSaveResultMsg struct{ Err error }
 )
 
 func (m Model) Init() tea.Cmd {
@@ -226,6 +245,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
 		}
 
+	case configSaveResultMsg:
+		if msg.Err != nil {
+			m.transientErr = "⚠ config save: " + msg.Err.Error()
+			m.transientTimer = 3
+			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		}
+
 	case localTickMsg:
 		cmds = append(cmds,
 			m.fetchTmux(),
@@ -263,14 +289,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Forward messages to new session input when in ModeNewSession
+	if m.mode == ModeNewSession {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			var cmd tea.Cmd
+			m.newSessionInput, cmd = m.newSessionInput.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
-	if m.mode == ModeCapture {
+	switch m.mode {
+	case ModeCapture:
 		return m.handleCaptureKey(msg)
+	case ModeNewSession:
+		return m.handleNewSessionKey(msg)
+	default:
+		return m.handleNavKey(msg)
 	}
-	return m.handleNavKey(msg)
 }
 
 func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
@@ -299,6 +340,15 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 			m.fetchInbox(),
 			m.fetchGitHub(),
 		)
+	case "n":
+		m.mode = ModeNewSession
+		m.newSessionStep = 0
+		m.newSessionPath = ""
+		m.newSessionErr = ""
+		m.newSessionInput.SetValue("")
+		m.newSessionInput.Placeholder = "~/workspace/my-project"
+		m.newSessionInput.Focus()
+		return nil
 	case "c":
 		m.mode = ModeCapture
 		m.focused = PanelToday
@@ -353,6 +403,129 @@ func (m *Model) handleCaptureKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+func (m *Model) handleNewSessionKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		if m.newSessionStep == 1 {
+			// Go back to path step
+			m.newSessionStep = 0
+			m.newSessionErr = ""
+			m.newSessionInput.SetValue(m.newSessionPath)
+			m.newSessionInput.Placeholder = "~/workspace/my-project"
+			return nil
+		}
+		// Cancel dialog
+		m.mode = ModeNavigation
+		m.newSessionInput.Blur()
+		m.newSessionErr = ""
+		return nil
+
+	case "enter":
+		if m.newSessionStep == 0 {
+			return m.newSessionValidatePath()
+		}
+		return m.newSessionLaunch(false)
+
+	case "ctrl+s":
+		if m.newSessionStep == 1 {
+			return m.newSessionLaunch(true)
+		}
+	}
+	return nil
+}
+
+func (m *Model) newSessionValidatePath() tea.Cmd {
+	raw := m.newSessionInput.Value()
+	if raw == "" {
+		m.newSessionErr = "path is required"
+		return nil
+	}
+
+	expanded := config.ExpandTilde(raw)
+	info, err := os.Stat(expanded)
+	if err != nil {
+		// Path doesn't exist — create it
+		if mkErr := os.MkdirAll(expanded, 0755); mkErr != nil {
+			m.newSessionErr = "failed to create: " + mkErr.Error()
+			return nil
+		}
+	} else if !info.IsDir() {
+		m.newSessionErr = "not a directory"
+		return nil
+	}
+
+	m.newSessionPath = expanded
+	m.newSessionStep = 1
+	m.newSessionErr = ""
+
+	// Auto-derive label from directory name
+	label := filepath.Base(expanded)
+	m.newSessionInput.SetValue(label)
+	m.newSessionInput.Placeholder = "session-label"
+	return nil
+}
+
+func (m *Model) newSessionLaunch(save bool) tea.Cmd {
+	label := m.newSessionInput.Value()
+	if label == "" {
+		m.newSessionErr = "label is required"
+		return nil
+	}
+	if !validLabel.MatchString(label) {
+		m.newSessionErr = "alphanumeric, hyphens, underscores only"
+		return nil
+	}
+	if m.labelExists(label) {
+		m.newSessionErr = "label already in use"
+		return nil
+	}
+
+	path := m.newSessionPath
+	repo := config.RepoConfig{Path: path, Label: label}
+
+	// Add to in-memory config so it shows in Repos panel immediately
+	m.config.Repos = append(m.config.Repos, repo)
+
+	// Exit dialog
+	m.mode = ModeNavigation
+	m.newSessionInput.Blur()
+	m.newSessionErr = ""
+
+	var cmds []tea.Cmd
+
+	if save {
+		configPath := m.configPath
+		cmds = append(cmds, func() tea.Msg {
+			err := config.AppendRepo(configPath, repo)
+			return configSaveResultMsg{Err: err}
+		})
+	}
+
+	cmds = append(cmds, func() tea.Msg {
+		err := tmuxJump(label, path)
+		return tmuxSwitchResultMsg{Err: err}
+	})
+
+	// Refresh git status to pick up the new repo
+	cmds = append(cmds, m.fetchGit())
+
+	return tea.Batch(cmds...)
+}
+
+func (m *Model) labelExists(label string) bool {
+	for _, r := range m.config.Repos {
+		if r.Label == label {
+			return true
+		}
+	}
+	for _, s := range m.sessions.Sessions {
+		if s.Name == label {
+			return true
+		}
+	}
+	return false
 }
 
 // tmuxSwitchResultMsg is sent after a tmux switch attempt.
@@ -487,12 +660,67 @@ func (m Model) View() string {
 		keyhints = WarningText.Render(m.transientErr)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	page := lipgloss.JoinVertical(lipgloss.Left,
 		sessionsPanel,
 		middleRow,
 		bottomRow,
 		keyhints,
 	)
+
+	// Overlay new session dialog if active
+	if m.mode == ModeNewSession {
+		dialog := m.renderNewSessionDialog()
+		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
+			lipgloss.WithWhitespaceChars(" "),
+			lipgloss.WithWhitespaceForeground(ColorBg))
+	}
+
+	return page
+}
+
+func (m *Model) renderNewSessionDialog() string {
+	dialogW := 60
+	if m.width < 64 {
+		dialogW = m.width - 4
+	}
+
+	var lines []string
+
+	title := AccentText.Bold(true).Render("New Session")
+	lines = append(lines, title)
+	lines = append(lines, "")
+
+	if m.newSessionStep == 0 {
+		lines = append(lines, BoldText.Render("Path:"))
+		lines = append(lines, "> "+m.newSessionInput.View())
+	} else {
+		lines = append(lines, MutedText.Render("Path: ")+m.newSessionPath)
+		lines = append(lines, "")
+		lines = append(lines, BoldText.Render("Label:"))
+		lines = append(lines, "> "+m.newSessionInput.View())
+	}
+
+	if m.newSessionErr != "" {
+		lines = append(lines, "")
+		lines = append(lines, ErrorText.Render("  "+m.newSessionErr))
+	}
+
+	lines = append(lines, "")
+	if m.newSessionStep == 0 {
+		lines = append(lines, MutedText.Render("Enter next  Esc cancel"))
+	} else {
+		lines = append(lines, MutedText.Render("Enter jump  Ctrl+S save+jump  Esc back"))
+	}
+
+	content := strings.Join(lines, "\n")
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Padding(1, 2).
+		Width(dialogW)
+
+	return style.Render(content)
 }
 
 // Source fetch commands

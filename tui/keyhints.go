@@ -16,6 +16,12 @@ func KeyhintsView(mode Mode, width int) string {
 			{"Enter", "save"},
 			{"Esc", "cancel"},
 		}
+	case ModeNewSession:
+		hints = []hint{
+			{"Enter", "next/jump"},
+			{"Ctrl+S", "save+jump"},
+			{"Esc", "back/cancel"},
+		}
 	default: // ModeNavigation
 		hints = []hint{
 			{"Tab", "panels"},
@@ -23,6 +29,7 @@ func KeyhintsView(mode Mode, width int) string {
 			{"Enter", "jump"},
 			{"x", "toggle"},
 			{"c", "cap"},
+			{"n", "new"},
 			{"r", "refresh"},
 			{"q", "quit"},
 		}
