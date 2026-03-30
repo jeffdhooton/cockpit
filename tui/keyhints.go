@@ -3,7 +3,7 @@ package tui
 import "strings"
 
 // KeyhintsView renders the context-sensitive bottom key bar.
-func KeyhintsView(mode Mode, width int) string {
+func KeyhintsView(mode Mode, focused PanelID, width int) string {
 	type hint struct {
 		key  string
 		desc string
@@ -30,9 +30,14 @@ func KeyhintsView(mode Mode, width int) string {
 			{"x", "toggle"},
 			{"c", "cap"},
 			{"n", "new"},
-			{"r", "refresh"},
-			{"q", "quit"},
 		}
+		if focused == PanelSessions {
+			hints = append(hints, hint{"s", "save"})
+		}
+		hints = append(hints,
+			hint{"r", "refresh"},
+			hint{"q", "quit"},
+		)
 	}
 
 	var parts []string

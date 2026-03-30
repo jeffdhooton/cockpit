@@ -8,20 +8,25 @@ import (
 )
 
 func TestCalculateLayoutFloors(t *testing.T) {
-	// All sizes should meet minimum floors
+	// All sizes should meet minimum floors and sum to height
 	for _, h := range []int{20, 26, 35, 45, 60, 80} {
 		l := CalculateLayout(100, h, 3)
-		if l.SessionsH < 10 {
-			t.Errorf("height=%d: SessionsH = %d, want >= 10", h, l.SessionsH)
+		if l.SessionsH < 8 {
+			t.Errorf("height=%d: SessionsH = %d, want >= 8", h, l.SessionsH)
 		}
 		if l.MiddleH < 6 {
 			t.Errorf("height=%d: MiddleH = %d, want >= 6", h, l.MiddleH)
 		}
-		if l.BottomH < 5 {
-			t.Errorf("height=%d: BottomH = %d, want >= 5", h, l.BottomH)
+		if l.BottomH < 3 {
+			t.Errorf("height=%d: BottomH = %d, want >= 3", h, l.BottomH)
 		}
 		if l.KeyhintsH != 1 {
 			t.Errorf("height=%d: KeyhintsH = %d, want 1", h, l.KeyhintsH)
+		}
+		total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
+		if total != h {
+			t.Errorf("height=%d: sections sum to %d (sessions=%d middle=%d bottom=%d keyhints=%d)",
+				h, total, l.SessionsH, l.MiddleH, l.BottomH, l.KeyhintsH)
 		}
 	}
 }

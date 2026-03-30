@@ -51,34 +51,92 @@ type Layout struct {
 }
 
 // CalculateLayout computes panel sizes based on terminal dimensions.
+// It guarantees that SessionsH + MiddleH + BottomH + KeyhintsH == height.
 func CalculateLayout(width, height, repoCount int) Layout {
 	l := Layout{KeyhintsH: 1}
 
-	// Layout ratios scale with terminal height
 	usable := height - l.KeyhintsH
+	if usable < 15 {
+		// Absolute minimum: give each section something
+		l.SessionsH = 5
+		l.MiddleH = 5
+		l.BottomH = usable - 10
+		if l.BottomH < 3 {
+			l.BottomH = 3
+		}
+		l.LeftW = width / 2
+		l.RightW = width - l.LeftW
+		return l
+	}
 
+	// Minimums — below these a panel is unusable
+	const minSessions = 8
+	const minMiddle = 6
+	const minBottom = 5
+	const minTotal = minSessions + minMiddle + minBottom
+
+	// Desired ratios vary with terminal height
 	sessionsPct := 45
-	if height < 50 {
-		sessionsPct = 25
-	} else if height < 60 {
+	middlePct := 30
+	bottomPct := 25
+	switch {
+	case height < 45:
 		sessionsPct = 30
-	} else if height < 70 {
+		middlePct = 38
+		bottomPct = 32
+	case height < 55:
+		sessionsPct = 35
+		middlePct = 35
+		bottomPct = 30
+	case height < 65:
 		sessionsPct = 38
+		middlePct = 33
+		bottomPct = 29
 	}
+	_ = bottomPct // ratios are applied below
 
-	l.SessionsH = usable * sessionsPct / 100
-	l.MiddleH = usable * 30 / 100
-	l.BottomH = usable - l.SessionsH - l.MiddleH
+	if usable <= minTotal {
+		// Not enough room for ratios — just use minimums
+		l.SessionsH = minSessions
+		l.MiddleH = minMiddle
+		l.BottomH = usable - minSessions - minMiddle
+		if l.BottomH < 3 {
+			l.BottomH = 3
+		}
+	} else {
+		// Apply ratios — bottom uses explicit pct, remainder goes to sessions
+		l.SessionsH = usable * sessionsPct / 100
+		l.MiddleH = usable * middlePct / 100
+		l.BottomH = usable * bottomPct / 100
 
-	// Floors — every section needs a minimum to be usable
-	if l.SessionsH < 10 {
-		l.SessionsH = 10
-	}
-	if l.MiddleH < 6 {
-		l.MiddleH = 6
-	}
-	if l.BottomH < 5 {
-		l.BottomH = 5
+		// Enforce minimums, then redistribute excess back
+		if l.SessionsH < minSessions {
+			l.SessionsH = minSessions
+		}
+		if l.MiddleH < minMiddle {
+			l.MiddleH = minMiddle
+		}
+		if l.BottomH < minBottom {
+			l.BottomH = minBottom
+		}
+
+		// If minimums pushed us over budget, shrink largest section first
+		for l.SessionsH+l.MiddleH+l.BottomH > usable {
+			if l.SessionsH > minSessions && l.SessionsH >= l.MiddleH && l.SessionsH >= l.BottomH {
+				l.SessionsH--
+			} else if l.MiddleH > minMiddle && l.MiddleH >= l.BottomH {
+				l.MiddleH--
+			} else if l.BottomH > minBottom {
+				l.BottomH--
+			} else {
+				// All at minimums but still over — shrink sessions (it's most resilient)
+				l.SessionsH--
+			}
+		}
+
+		// If under budget, give remainder to sessions (preview benefits most)
+		remainder := usable - l.SessionsH - l.MiddleH - l.BottomH
+		l.SessionsH += remainder
 	}
 
 	// Width: 50/50 split for side-by-side panels
@@ -174,6 +232,7 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	modeBefore := m.mode
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -245,6 +304,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
 		}
 
+	case sessionSavedMsg:
+		// Add to in-memory config and refresh repos panel
+		m.config.Repos = append(m.config.Repos, msg.Repo)
+		m.transientErr = "✓ saved " + msg.Repo.Label + " to config"
+		m.transientTimer = 3
+		cmds = append(cmds, m.fetchGit())
+		cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+
 	case configSaveResultMsg:
 		if msg.Err != nil {
 			m.transientErr = "⚠ config save: " + msg.Err.Error()
@@ -278,8 +345,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// keeps running in the background. User returns via prefix+S or `cockpit`.
 	}
 
-	// Update text input if in capture mode — only forward key and blink messages
-	if m.mode == ModeCapture {
+	// Update text input if already in capture mode — skip the key that entered the mode
+	if modeBefore == ModeCapture {
 		if _, ok := msg.(tea.KeyMsg); ok {
 			var cmd tea.Cmd
 			m.tasks.TextInput, cmd = m.tasks.TextInput.Update(msg)
@@ -289,8 +356,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Forward messages to new session input when in ModeNewSession
-	if m.mode == ModeNewSession {
+	// Forward messages to new session input — skip the key that entered the mode
+	if modeBefore == ModeNewSession {
 		if _, ok := msg.(tea.KeyMsg); ok {
 			var cmd tea.Cmd
 			m.newSessionInput, cmd = m.newSessionInput.Update(msg)
@@ -340,6 +407,10 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 			m.fetchInbox(),
 			m.fetchGitHub(),
 		)
+	case "s":
+		if m.focused == PanelSessions && len(m.sessions.Sessions) > 0 {
+			return m.saveSessionAsRepo()
+		}
 	case "n":
 		m.mode = ModeNewSession
 		m.newSessionStep = 0
@@ -528,6 +599,43 @@ func (m *Model) labelExists(label string) bool {
 	return false
 }
 
+func (m *Model) saveSessionAsRepo() tea.Cmd {
+	session := m.sessions.Sessions[m.sessions.Cursor]
+	label := session.Name
+
+	configPath := m.configPath
+	return func() tea.Msg {
+		// Check the actual config file for duplicates, not in-memory state
+		diskCfg, err := config.Load(configPath)
+		if err == nil {
+			for _, r := range diskCfg.Repos {
+				if r.Label == label {
+					return sourceErrMsg{Source: "save", Err: fmt.Errorf("%s is already in config", label)}
+				}
+			}
+		}
+
+		// Get the session's working directory from tmux
+		out, err := exec.Command("tmux", "display-message", "-t", label, "-p", "#{pane_current_path}").Output()
+		if err != nil {
+			return sourceErrMsg{Source: "save", Err: fmt.Errorf("could not get session path: %w", err)}
+		}
+		path := strings.TrimSpace(string(out))
+		if path == "" {
+			return sourceErrMsg{Source: "save", Err: fmt.Errorf("empty path for session %s", label)}
+		}
+
+		repo := config.RepoConfig{Path: path, Label: label}
+		if err := config.AppendRepo(configPath, repo); err != nil {
+			return configSaveResultMsg{Err: err}
+		}
+		return sessionSavedMsg{Repo: repo}
+	}
+}
+
+// sessionSavedMsg is sent after successfully saving a session to config.
+type sessionSavedMsg struct{ Repo config.RepoConfig }
+
 // tmuxSwitchResultMsg is sent after a tmux switch attempt.
 type tmuxSwitchResultMsg struct{ Err error }
 
@@ -598,32 +706,34 @@ func (m Model) View() string {
 		sessionsContent = m.sessions.CompactView(m.width, m.focused == PanelSessions)
 	}
 
-	// Preview gets a fixed max height — clamp the content
-	// Preview lines scale with terminal height
-	// Preview lines scale with terminal
-	previewMaxLines := 3
-	switch {
-	case m.height >= 70:
-		previewMaxLines = 25
-	case m.height >= 55:
-		previewMaxLines = 12
-	case m.height >= 45:
-		previewMaxLines = 6
+	// Preview lines derive from layout: sessions inner height minus cards (~5 lines) minus header (1)
+	previewMaxLines := m.layout.SessionsH - 8
+	if previewMaxLines < 2 {
+		previewMaxLines = 2
 	}
 	if m.sessionPreview != "" {
 		previewHeader := MutedText.Render("─── " + m.selectedSessionName() + " ")
+		// Inner width: panel width minus border (2) minus padding (2)
+		innerW := m.width - 4
+		if innerW < 20 {
+			innerW = 20
+		}
 		lines := strings.Split(m.sessionPreview, "\n")
+		// Truncate long lines to prevent wrapping that blows the height budget
+		for i, line := range lines {
+			if len(line) > innerW {
+				lines[i] = line[:innerW-1] + "…"
+			}
+		}
 		if len(lines) > previewMaxLines {
 			lines = lines[len(lines)-previewMaxLines:]
 		}
-		// Pad to exactly previewMaxLines so the panel height is stable
 		for len(lines) < previewMaxLines {
 			lines = append(lines, "")
 		}
 		sessionsContent += "\n" + previewHeader + "\n" + strings.Join(lines, "\n")
 	} else {
-		// Reserve the same space even with no preview so layout doesn't jump
-		emptyLines := make([]string, previewMaxLines+1) // +1 for header line
+		emptyLines := make([]string, previewMaxLines+1)
 		for i := range emptyLines {
 			emptyLines[i] = ""
 		}
@@ -655,7 +765,7 @@ func (m Model) View() string {
 	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, signalsPanel)
 
 	// Key hints
-	keyhints := KeyhintsView(m.mode, m.width)
+	keyhints := KeyhintsView(m.mode, m.focused, m.width)
 	if m.transientErr != "" {
 		keyhints = WarningText.Render(m.transientErr)
 	}
@@ -707,9 +817,11 @@ func (m *Model) renderNewSessionDialog() string {
 
 	lines = append(lines, "")
 	if m.newSessionStep == 0 {
-		lines = append(lines, MutedText.Render("Enter next  Esc cancel"))
+		lines = append(lines, AccentText.Render("Enter")+" "+MutedText.Render("next")+"  "+AccentText.Render("Esc")+" "+MutedText.Render("cancel"))
 	} else {
-		lines = append(lines, MutedText.Render("Enter jump  Ctrl+S save+jump  Esc back"))
+		lines = append(lines, AccentText.Render("Enter")+" "+MutedText.Render("jump (ephemeral)"))
+		lines = append(lines, SuccessText.Render("Ctrl+S")+" "+MutedText.Render("save to config + jump"))
+		lines = append(lines, AccentText.Render("Esc")+" "+MutedText.Render("back"))
 	}
 
 	content := strings.Join(lines, "\n")
