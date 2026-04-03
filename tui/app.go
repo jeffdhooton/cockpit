@@ -162,7 +162,6 @@ type Model struct {
 	inbox          InboxModel
 	signals        SignalsModel
 	github         *sources.GitHubStatus
-	calendar       []sources.CalendarEvent
 	sessionPreview string
 	lastPreviewSession string
 
@@ -208,7 +207,6 @@ type (
 	tasksDataMsg   struct{ Tasks []sources.Task }
 	inboxDataMsg   struct{ Items []sources.Task }
 	githubDataMsg    struct{ Status *sources.GitHubStatus }
-	calendarDataMsg  struct{ Events []sources.CalendarEvent }
 	sourceErrMsg     struct{ Source string; Err error }
 	previewDataMsg    struct{ Content string; Session string }
 	localTickMsg        struct{}
@@ -224,7 +222,6 @@ func (m Model) Init() tea.Cmd {
 		m.fetchTasks(),
 		m.fetchInbox(),
 		m.fetchGitHub(),
-		m.fetchCalendar(),
 		m.localTick(),
 		m.remoteTick(),
 	)
@@ -287,10 +284,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.github = msg.Status
 		m.updateSignals()
 
-	case calendarDataMsg:
-		m.calendar = msg.Events
-		m.updateSignals()
-
 	case sourceErrMsg:
 		m.transientErr = "⚠ " + msg.Source + ": " + msg.Err.Error()
 		m.transientTimer = 3
@@ -325,7 +318,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchGit(),
 			m.fetchTasks(),
 			m.fetchInbox(),
-			m.fetchCalendar(),
 			m.localTick(),
 		)
 
@@ -688,7 +680,7 @@ func (m *Model) cursorDown() {
 }
 
 func (m *Model) updateSignals() {
-	m.signals.UpdateSignals(m.sessions.Sessions, m.repos.Repos, m.github, m.calendar, m.staleThreshold)
+	m.signals.UpdateSignals(m.sessions.Sessions, m.repos.Repos, m.github, m.staleThreshold)
 }
 
 func (m Model) View() string {
@@ -884,17 +876,6 @@ func (m Model) fetchGitHub() tea.Cmd {
 	return func() tea.Msg {
 		status := sources.GetGitHubStatus(context.Background(), repos)
 		return githubDataMsg{Status: status}
-	}
-}
-
-func (m Model) fetchCalendar() tea.Cmd {
-	return func() tea.Msg {
-		events, err := sources.GetUpcomingEvents(context.Background(), 60)
-		if err != nil {
-			// Calendar not available — silently ignore
-			return calendarDataMsg{}
-		}
-		return calendarDataMsg{Events: events}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/jhoot/cockpit/sources"
 )
 
+
 // SignalsModel manages the signals/attention panel.
 type SignalsModel struct {
 	Signals []Signal
@@ -30,35 +31,10 @@ func (m *SignalsModel) UpdateSignals(
 	sessions []sources.TmuxSession,
 	repos []sources.GitRepoStatus,
 	github *sources.GitHubStatus,
-	calendar []sources.CalendarEvent,
 	staleThreshold time.Duration,
 ) {
 	m.Loading = false
 	var signals []Signal
-
-	// --- Calendar (time-sensitive, always on top) ---
-
-	for _, evt := range calendar {
-		var msg string
-		if evt.MinutesOut <= 0 {
-			msg = fmt.Sprintf("%s — now", evt.Summary)
-		} else if evt.MinutesOut <= 5 {
-			msg = fmt.Sprintf("%s — in %dm", evt.Summary, evt.MinutesOut)
-		} else {
-			msg = fmt.Sprintf("%s — in %dm", evt.Summary, evt.MinutesOut)
-		}
-		level := "info"
-		if evt.MinutesOut <= 5 {
-			level = "error"
-		} else if evt.MinutesOut <= 15 {
-			level = "warning"
-		}
-		signals = append(signals, Signal{
-			Icon:    "📅",
-			Message: msg,
-			Level:   level,
-		})
-	}
 
 	// --- Errors (highest priority) ---
 
