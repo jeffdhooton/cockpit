@@ -1,0 +1,79 @@
+# GoReleaser config for cockpit.
+#
+# Triggered by GitHub Actions on tag push (v*). Builds a single static
+# binary per platform, archives it as .tar.gz alongside the README,
+# and uploads to the GitHub release.
+#
+# To cut a release locally without GitHub Actions: install goreleaser,
+# then run `goreleaser release --clean` after tagging a commit.
+
+version: 2
+
+project_name: cockpit
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: cockpit
+    main: .
+    binary: cockpit
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+    flags:
+      - -trimpath
+
+archives:
+  - id: cockpit
+    ids:
+      - cockpit
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format: tar.gz
+    files:
+      - README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^test:"
+      - "^ci:"
+      - "^wip:"
+      - "typo"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  draft: true
+  prerelease: auto
+  header: |
+    ## cockpit {{ .Tag }}
+
+    Install via the one-liner:
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/jeffdhooton/cockpit/main/scripts/install.sh | sh
+    ```
+
+    Or grab a binary below and drop it on your PATH.

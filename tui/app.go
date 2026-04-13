@@ -38,16 +38,19 @@ const (
 	ModeNavigation Mode = iota
 	ModeCapture
 	ModeNewSession
+	ModeSearch
 )
 
 // Layout holds calculated panel dimensions.
 type Layout struct {
-	SessionsH int // cards + preview
-	MiddleH   int // repos | today row height
-	BottomH   int // inbox | signals row height
-	KeyhintsH int
-	LeftW     int  // repos / inbox width
-	RightW    int  // today / signals width
+	SessionsH    int // cards + preview
+	MiddleH      int // repos | today row height
+	BottomH      int // inbox | signals row height
+	KeyhintsH    int
+	LeftW        int // repos width
+	RightW       int // today width
+	BottomLeftW  int // notes width (2/3)
+	BottomRightW int // signals width (1/3)
 }
 
 // CalculateLayout computes panel sizes based on terminal dimensions.
@@ -66,6 +69,8 @@ func CalculateLayout(width, height, repoCount int) Layout {
 		}
 		l.LeftW = width / 2
 		l.RightW = width - l.LeftW
+		l.BottomLeftW = width * 2 / 3
+		l.BottomRightW = width - l.BottomLeftW
 		return l
 	}
 
@@ -139,9 +144,13 @@ func CalculateLayout(width, height, repoCount int) Layout {
 		l.SessionsH += remainder
 	}
 
-	// Width: 50/50 split for side-by-side panels
+	// Width: 50/50 split for middle row
 	l.LeftW = width / 2
 	l.RightW = width - l.LeftW
+
+	// Bottom row: 2/3 notes, 1/3 signals
+	l.BottomLeftW = width * 2 / 3
+	l.BottomRightW = width - l.BottomLeftW
 
 	return l
 }
@@ -174,6 +183,11 @@ type Model struct {
 	newSessionStep  int    // 0=path, 1=label confirm
 	newSessionPath  string // expanded path from step 0
 	newSessionErr   string // inline validation error
+
+	// Session search (/ key)
+	searchInput   textinput.Model
+	searchResults []int // indices into sessions.Sessions
+	searchCursor  int
 }
 
 // NewModel creates a new root model with the given config.
@@ -184,6 +198,11 @@ func NewModel(cfg *config.Config, configPath string) Model {
 	ti.Placeholder = "~/workspace/my-project"
 	ti.CharLimit = 512
 	ti.Width = 50
+
+	si := textinput.New()
+	si.Placeholder = "search sessions..."
+	si.CharLimit = 128
+	si.Width = 40
 
 	m := Model{
 		config:          cfg,
@@ -196,6 +215,7 @@ func NewModel(cfg *config.Config, configPath string) Model {
 		signals:         NewSignalsModel(),
 		staleThreshold:  staleThreshold,
 		newSessionInput: ti,
+		searchInput:     si,
 	}
 	return m
 }
@@ -208,7 +228,8 @@ type (
 	inboxDataMsg   struct{ Items []sources.Task }
 	githubDataMsg    struct{ Status *sources.GitHubStatus }
 	sourceErrMsg     struct{ Source string; Err error }
-	previewDataMsg    struct{ Content string; Session string }
+	previewDataMsg      struct{ Content string; Session string }
+	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
 	localTickMsg        struct{}
 	remoteTickMsg       struct{}
 	clearErrMsg         struct{}
@@ -254,8 +275,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions.Sessions = filtered
 		m.sessions.Loading = false
 		m.updateSignals()
-		// Fetch preview for currently selected session
-		cmds = append(cmds, m.fetchPreview())
+		// Fetch preview for currently selected session + status for all sessions
+		cmds = append(cmds, m.fetchPreview(), m.fetchSessionStatuses())
+
+	case sessionStatusMsg:
+		for name, content := range msg.Snapshots {
+			m.sessions.UpdateStatus(name, content)
+		}
 
 	case previewDataMsg:
 		if msg.Session == m.selectedSessionName() {
@@ -269,16 +295,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateSignals()
 
 	case tasksDataMsg:
-		m.tasks.Tasks = msg.Tasks
+		// Filter out completed tasks — they get cleaned from the view automatically
+		var active []sources.Task
+		for _, t := range msg.Tasks {
+			if !t.Done {
+				active = append(active, t)
+			}
+		}
+		m.tasks.Tasks = active
 		m.tasks.Loading = false
-		// Set cursor to first unchecked if this is the initial load
-		if m.tasks.Cursor == 0 {
-			m.tasks.Cursor = m.tasks.FirstUnchecked()
+		if m.tasks.Cursor >= len(m.tasks.Tasks) && m.tasks.Cursor > 0 {
+			m.tasks.Cursor = len(m.tasks.Tasks) - 1
 		}
 
 	case inboxDataMsg:
-		m.inbox.Items = msg.Items
+		// Filter out completed items
+		var active []sources.Task
+		for _, t := range msg.Items {
+			if !t.Done {
+				active = append(active, t)
+			}
+		}
+		m.inbox.Items = active
 		m.inbox.Loading = false
+		if m.inbox.Cursor >= len(m.inbox.Items) && m.inbox.Cursor > 0 {
+			m.inbox.Cursor = len(m.inbox.Items) - 1
+		}
 
 	case githubDataMsg:
 		m.github = msg.Status
@@ -359,6 +401,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Forward messages to search input — skip the key that entered the mode
+	if modeBefore == ModeSearch {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			prevVal := m.searchInput.Value()
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			// Re-filter when query changes
+			if m.searchInput.Value() != prevVal {
+				m.updateSearchResults()
+			}
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -368,6 +426,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleCaptureKey(msg)
 	case ModeNewSession:
 		return m.handleNewSessionKey(msg)
+	case ModeSearch:
+		return m.handleSearchKey(msg)
 	default:
 		return m.handleNavKey(msg)
 	}
@@ -427,7 +487,11 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 					return sourceErrMsg{Source: "toggle", Err: err}
 				}
 			}
-			m.tasks.Tasks[m.tasks.Cursor].Done = !m.tasks.Tasks[m.tasks.Cursor].Done
+			// Remove completed task from view immediately
+			m.tasks.Tasks = append(m.tasks.Tasks[:m.tasks.Cursor], m.tasks.Tasks[m.tasks.Cursor+1:]...)
+			if m.tasks.Cursor >= len(m.tasks.Tasks) && m.tasks.Cursor > 0 {
+				m.tasks.Cursor--
+			}
 		} else if m.focused == PanelInbox && len(m.inbox.Items) > 0 {
 			item := m.inbox.Items[m.inbox.Cursor]
 			err := sources.ToggleTask(m.config.Obsidian.InboxFile, item.Line)
@@ -436,8 +500,18 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 					return sourceErrMsg{Source: "toggle", Err: err}
 				}
 			}
-			m.inbox.Items[m.inbox.Cursor].Done = !m.inbox.Items[m.inbox.Cursor].Done
+			// Remove completed item from view immediately
+			m.inbox.Items = append(m.inbox.Items[:m.inbox.Cursor], m.inbox.Items[m.inbox.Cursor+1:]...)
+			if m.inbox.Cursor >= len(m.inbox.Items) && m.inbox.Cursor > 0 {
+				m.inbox.Cursor--
+			}
 		}
+	case "/":
+		m.mode = ModeSearch
+		m.searchInput.SetValue("")
+		m.searchInput.Focus()
+		m.updateSearchResults()
+		return nil
 	case "enter":
 		return m.handleEnter()
 	}
@@ -734,9 +808,9 @@ func (m Model) View() string {
 
 	sessionsPanel := RenderPanel("Sessions", sessionsContent, m.width, m.layout.SessionsH, m.focused == PanelSessions)
 
-	// === Middle row: Repos | Today (side by side) ===
+	// === Middle row: Projects | Today (side by side) ===
 	repos := m.repos
-	reposPanel := RenderPanel("Repos",
+	reposPanel := RenderPanel("Projects",
 		repos.View(m.layout.LeftW, m.layout.MiddleH, m.focused == PanelRepos, showLastCommit),
 		m.layout.LeftW, m.layout.MiddleH, m.focused == PanelRepos)
 
@@ -747,13 +821,13 @@ func (m Model) View() string {
 
 	middleRow := lipgloss.JoinHorizontal(lipgloss.Top, reposPanel, tasksPanel)
 
-	// === Bottom row: Inbox | Signals (side by side) ===
+	// === Bottom row: Notes (2/3) | Signals (1/3) ===
 	inboxPanel := RenderPanel("Notes",
-		m.inbox.View(m.layout.LeftW, m.layout.BottomH, m.focused == PanelInbox),
-		m.layout.LeftW, m.layout.BottomH, m.focused == PanelInbox)
+		m.inbox.View(m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox),
+		m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox)
 	signalsPanel := RenderPanel("Signals",
-		m.signals.View(m.layout.RightW, m.layout.BottomH, m.focused == PanelSignals),
-		m.layout.RightW, m.layout.BottomH, m.focused == PanelSignals)
+		m.signals.View(m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelSignals),
+		m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelSignals)
 	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, signalsPanel)
 
 	// Key hints
@@ -772,6 +846,14 @@ func (m Model) View() string {
 	// Overlay new session dialog if active
 	if m.mode == ModeNewSession {
 		dialog := m.renderNewSessionDialog()
+		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
+			lipgloss.WithWhitespaceChars(" "),
+			lipgloss.WithWhitespaceForeground(ColorBg))
+	}
+
+	// Overlay search dialog
+	if m.mode == ModeSearch {
+		dialog := m.renderSearchDialog()
 		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
 			lipgloss.WithWhitespaceChars(" "),
 			lipgloss.WithWhitespaceForeground(ColorBg))
@@ -911,6 +993,126 @@ func (m Model) fetchPreview() tea.Cmd {
 			return previewDataMsg{Content: MutedText.Render("(no preview available)"), Session: name}
 		}
 		return previewDataMsg{Content: content, Session: name}
+	}
+}
+
+func (m *Model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.mode = ModeNavigation
+		m.searchInput.Blur()
+		return nil
+	case "enter":
+		if len(m.searchResults) > 0 {
+			idx := m.searchResults[m.searchCursor]
+			name := m.sessions.Sessions[idx].Name
+			m.mode = ModeNavigation
+			m.searchInput.Blur()
+			return func() tea.Msg {
+				err := tmuxSwitch(name)
+				return tmuxSwitchResultMsg{Err: err}
+			}
+		}
+		return nil
+	case "up", "ctrl+k":
+		if m.searchCursor > 0 {
+			m.searchCursor--
+		}
+		return nil
+	case "down", "ctrl+j":
+		if m.searchCursor < len(m.searchResults)-1 {
+			m.searchCursor++
+		}
+		return nil
+	}
+	return nil
+}
+
+func (m *Model) updateSearchResults() {
+	query := strings.ToLower(m.searchInput.Value())
+	m.searchResults = nil
+	m.searchCursor = 0
+
+	for i, s := range m.sessions.Sessions {
+		if query == "" || strings.Contains(strings.ToLower(s.Name), query) {
+			m.searchResults = append(m.searchResults, i)
+		}
+	}
+}
+
+func (m *Model) renderSearchDialog() string {
+	dialogW := 50
+	if m.width < 54 {
+		dialogW = m.width - 4
+	}
+
+	var lines []string
+
+	lines = append(lines, AccentText.Bold(true).Render("Jump to Session"))
+	lines = append(lines, "")
+	lines = append(lines, "  "+m.searchInput.View())
+	lines = append(lines, "")
+
+	maxVisible := 10
+	for vi, ri := range m.searchResults {
+		if vi >= maxVisible {
+			lines = append(lines, MutedText.Render(fmt.Sprintf("  … %d more", len(m.searchResults)-maxVisible)))
+			break
+		}
+
+		s := m.sessions.Sessions[ri]
+
+		// Status indicator
+		statusDot := MutedText.Render("○")
+		if st, ok := m.sessions.Statuses[s.Name]; ok {
+			switch st {
+			case sources.ClaudeStatusIdle:
+				statusDot = ErrorText.Render("●")
+			case sources.ClaudeStatusWorking:
+				statusDot = SuccessText.Render("●")
+			}
+		}
+
+		name := s.Name
+		if vi == m.searchCursor {
+			name = AccentText.Bold(true).Render(s.Name)
+			lines = append(lines, fmt.Sprintf("  ▸ %s %s", statusDot, name))
+		} else {
+			lines = append(lines, fmt.Sprintf("    %s %s", statusDot, name))
+		}
+	}
+
+	if len(m.searchResults) == 0 && m.searchInput.Value() != "" {
+		lines = append(lines, MutedText.Render("  no matches"))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, MutedText.Render("  ↑↓ navigate  Enter jump  Esc cancel"))
+
+	content := strings.Join(lines, "\n")
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Padding(1, 2).
+		Width(dialogW)
+
+	return style.Render(content)
+}
+
+func (m Model) fetchSessionStatuses() tea.Cmd {
+	sessions := m.sessions.Sessions
+	return func() tea.Msg {
+		ctx := context.Background()
+		snapshots := make(map[string]string, len(sessions))
+		for _, s := range sessions {
+			content, err := sources.CapturePaneContent(ctx, s.Name)
+			if err != nil {
+				continue
+			}
+			snapshots[s.Name] = content
+		}
+		return sessionStatusMsg{Snapshots: snapshots}
 	}
 }
 

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -11,9 +12,38 @@ import (
 
 // SessionsModel manages the sessions panel.
 type SessionsModel struct {
-	Sessions []sources.TmuxSession
-	Cursor   int
-	Loading  bool
+	Sessions   []sources.TmuxSession
+	Cursor     int
+	Loading    bool
+	Statuses   map[string]sources.ClaudeStatus // session name → detected status
+	prevHashes map[string]string               // session name → previous content hash
+}
+
+// UpdateStatus compares current pane content against the previous snapshot.
+// If the content changed, the session is working. If unchanged, it's idle.
+func (m *SessionsModel) UpdateStatus(name, content string) {
+	if m.Statuses == nil {
+		m.Statuses = make(map[string]sources.ClaudeStatus)
+	}
+	if m.prevHashes == nil {
+		m.prevHashes = make(map[string]string)
+	}
+
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	prev, seen := m.prevHashes[name]
+	m.prevHashes[name] = hash
+
+	if !seen {
+		// First poll — can't determine yet
+		m.Statuses[name] = sources.ClaudeStatusUnknown
+		return
+	}
+
+	if hash == prev {
+		m.Statuses[name] = sources.ClaudeStatusIdle
+	} else {
+		m.Statuses[name] = sources.ClaudeStatusWorking
+	}
 }
 
 func NewSessionsModel() SessionsModel {
@@ -61,9 +91,18 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
 		nameStyle = nameStyle.Foreground(ColorAccent)
 	}
 
+	// Claude Code status indicator (from content-hash diffing)
 	statusText := MutedText.Render("detached")
 	if s.Attached {
 		statusText = SuccessText.Render("attached")
+	}
+	if st, ok := m.Statuses[s.Name]; ok {
+		switch st {
+		case sources.ClaudeStatusIdle:
+			statusText = ErrorText.Render("● idle")
+		case sources.ClaudeStatusWorking:
+			statusText = SuccessText.Render("● working")
+		}
 	}
 
 	idle := formatIdleTime(s.LastUsed)
@@ -71,6 +110,14 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
 
 	border := lipgloss.RoundedBorder()
 	borderColor := ColorBorder
+	if st, ok := m.Statuses[s.Name]; ok {
+		switch st {
+		case sources.ClaudeStatusIdle:
+			borderColor = ColorError
+		case sources.ClaudeStatusWorking:
+			borderColor = ColorSuccess
+		}
+	}
 	if selected {
 		borderColor = ColorAccent
 	}
@@ -124,6 +171,14 @@ func (m SessionsModel) CompactView(width int, focused bool) string {
 		status := MutedText.Render("detached")
 		if s.Attached {
 			status = SuccessText.Render("attached")
+		}
+		if st, ok := m.Statuses[s.Name]; ok {
+			switch st {
+			case sources.ClaudeStatusIdle:
+				status = ErrorText.Render("● idle")
+			case sources.ClaudeStatusWorking:
+				status = SuccessText.Render("● working")
+			}
 		}
 
 		line := fmt.Sprintf("%s%s [%s] %dw",

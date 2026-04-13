@@ -45,7 +45,7 @@ func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) 
 		return MutedText.Render("⠋ Loading repos...")
 	}
 	if len(m.Repos) == 0 {
-		return MutedText.Render("No repos configured. Add repos in ") +
+		return MutedText.Render("No projects configured. Add repos in ") +
 			AccentText.Render("~/.config/cockpit/config.toml")
 	}
 
@@ -74,21 +74,57 @@ func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) 
 		header += " " + MutedText.Bold(true).Render(padRight("LAST COMMIT", commitW))
 	}
 
-	visibleRows := height - 3 // header + borders
-	if visibleRows < 1 {
-		visibleRows = 1
+	// Available content lines: height - 2 (borders) - 1 (panel title) - 1 (header)
+	bodyRows := height - 4
+	if bodyRows < 1 {
+		bodyRows = 1
 	}
 
-	m.AdjustScroll(visibleRows)
+	// Converge on visibleRows accounting for the "more above"/"more below"
+	// indicators, each of which eats a row. AdjustScroll must be called with
+	// the final row count or the cursor can end up clipped off-screen.
+	visibleRows := bodyRows
+	hasAbove := false
+	hasBelow := false
+	for i := 0; i < 3; i++ {
+		m.AdjustScroll(visibleRows)
+		end := m.ScrollOffset + visibleRows
+		if end > len(m.Repos) {
+			end = len(m.Repos)
+		}
+		newAbove := m.ScrollOffset > 0
+		newBelow := end < len(m.Repos)
+		newVisible := bodyRows
+		if newAbove {
+			newVisible--
+		}
+		if newBelow {
+			newVisible--
+		}
+		if newVisible < 1 {
+			newVisible = 1
+		}
+		hasAbove = newAbove
+		hasBelow = newBelow
+		if newVisible == visibleRows {
+			break
+		}
+		visibleRows = newVisible
+	}
 
-	var lines []string
-	lines = append(lines, header)
-
-	// Scrolling
 	start := m.ScrollOffset
 	end := start + visibleRows
 	if end > len(m.Repos) {
 		end = len(m.Repos)
+	}
+	hasAbove = start > 0
+	hasBelow = end < len(m.Repos)
+
+	var lines []string
+	lines = append(lines, header)
+
+	if hasAbove {
+		lines = append(lines, MutedText.Render("  ▲ more above"))
 	}
 
 	for i := start; i < end; i++ {
@@ -133,11 +169,7 @@ func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) 
 		lines = append(lines, line)
 	}
 
-	// Scroll indicators
-	if start > 0 {
-		lines = append([]string{lines[0], MutedText.Render("  ▲ more above")}, lines[1:]...)
-	}
-	if end < len(m.Repos) {
+	if hasBelow {
 		lines = append(lines, MutedText.Render("  ▼ more below"))
 	}
 

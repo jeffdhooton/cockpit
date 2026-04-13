@@ -56,6 +56,29 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 	return sessions, nil
 }
 
+// ClaudeStatus represents the detected state of a Claude Code session.
+type ClaudeStatus int
+
+const (
+	ClaudeStatusUnknown ClaudeStatus = iota
+	ClaudeStatusIdle                 // pane content unchanged between polls — waiting for input
+	ClaudeStatusWorking              // pane content changed since last poll — actively producing output
+)
+
+// CapturePaneContent returns the full visible pane content for hashing/comparison.
+// Lighter than CapturePane — no line limiting, just trims trailing blanks.
+func CapturePaneContent(ctx context.Context, sessionName string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", sessionName, "-p")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(out), "\n \t"), nil
+}
+
 // CapturePane returns the visible content of the active pane in a tmux session.
 func CapturePane(ctx context.Context, sessionName string, maxLines int) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
