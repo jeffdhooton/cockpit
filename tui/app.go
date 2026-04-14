@@ -27,7 +27,7 @@ const (
 	PanelRepos
 	PanelToday
 	PanelInbox
-	PanelSignals
+	PanelPlasma
 	panelCount // sentinel
 )
 
@@ -169,12 +169,11 @@ type Model struct {
 	repos          ReposModel
 	tasks          TasksModel
 	inbox          InboxModel
-	signals        SignalsModel
+	plasma         PlasmaModel
 	github         *sources.GitHubStatus
 	sessionPreview string
 	lastPreviewSession string
 
-	staleThreshold time.Duration
 	transientErr   string
 	transientTimer int
 
@@ -192,8 +191,6 @@ type Model struct {
 
 // NewModel creates a new root model with the given config.
 func NewModel(cfg *config.Config, configPath string) Model {
-	staleThreshold, _ := time.ParseDuration(cfg.Signals.StaleSessionThreshold)
-
 	ti := textinput.New()
 	ti.Placeholder = "~/workspace/my-project"
 	ti.CharLimit = 512
@@ -212,8 +209,7 @@ func NewModel(cfg *config.Config, configPath string) Model {
 		repos:           NewReposModel(),
 		tasks:           NewTasksModel(),
 		inbox:           InboxModel{Loading: true, FilePath: cfg.Obsidian.InboxFile},
-		signals:         NewSignalsModel(),
-		staleThreshold:  staleThreshold,
+		plasma:          NewPlasmaModel(),
 		newSessionInput: ti,
 		searchInput:     si,
 	}
@@ -232,6 +228,7 @@ type (
 	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
 	localTickMsg        struct{}
 	remoteTickMsg       struct{}
+	plasmaTickMsg       struct{}
 	clearErrMsg         struct{}
 	configSaveResultMsg struct{ Err error }
 )
@@ -245,6 +242,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchGitHub(),
 		m.localTick(),
 		m.remoteTick(),
+		m.plasmaTick(),
 	)
 }
 
@@ -274,7 +272,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessions.Sessions = filtered
 		m.sessions.Loading = false
-		m.updateSignals()
 		// Fetch preview for currently selected session + status for all sessions
 		cmds = append(cmds, m.fetchPreview(), m.fetchSessionStatuses())
 
@@ -292,7 +289,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repos.Repos = msg.Repos
 		m.repos.Loading = false
 		m.layout = CalculateLayout(m.width, m.height, len(m.repos.Repos))
-		m.updateSignals()
 
 	case tasksDataMsg:
 		// Filter out completed tasks — they get cleaned from the view automatically
@@ -324,7 +320,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case githubDataMsg:
 		m.github = msg.Status
-		m.updateSignals()
 
 	case sourceErrMsg:
 		m.transientErr = "⚠ " + msg.Source + ": " + msg.Err.Error()
@@ -368,6 +363,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchGitHub(),
 			m.remoteTick(),
 		)
+
+	case plasmaTickMsg:
+		m.plasma.Tick()
+		cmds = append(cmds, m.plasmaTick())
 
 	case tmuxSwitchResultMsg:
 		if msg.Err != nil {
@@ -753,9 +752,6 @@ func (m *Model) cursorDown() {
 	}
 }
 
-func (m *Model) updateSignals() {
-	m.signals.UpdateSignals(m.sessions.Sessions, m.repos.Repos, m.github, m.staleThreshold)
-}
 
 func (m Model) View() string {
 	if m.width < 60 {
@@ -821,14 +817,14 @@ func (m Model) View() string {
 
 	middleRow := lipgloss.JoinHorizontal(lipgloss.Top, reposPanel, tasksPanel)
 
-	// === Bottom row: Notes (2/3) | Signals (1/3) ===
+	// === Bottom row: Notes (2/3) | Garden (1/3) ===
 	inboxPanel := RenderPanel("Notes",
 		m.inbox.View(m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox),
 		m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox)
-	signalsPanel := RenderPanel("Signals",
-		m.signals.View(m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelSignals),
-		m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelSignals)
-	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, signalsPanel)
+	plasmaPanel := RenderPanel("Plasma",
+		m.plasma.View(m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelPlasma),
+		m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelPlasma)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, plasmaPanel)
 
 	// Key hints
 	keyhints := KeyhintsView(m.mode, m.focused, m.width)
@@ -969,6 +965,11 @@ func (m Model) localTick() tea.Cmd {
 func (m Model) remoteTick() tea.Cmd {
 	d := time.Duration(m.config.GitHub.RefreshInterval) * time.Second
 	return tea.Tick(d, func(time.Time) tea.Msg { return remoteTickMsg{} })
+}
+
+// plasmaTick drives the plasma field animation at ~16fps.
+func (m Model) plasmaTick() tea.Cmd {
+	return tea.Tick(time.Second/16, func(time.Time) tea.Msg { return plasmaTickMsg{} })
 }
 
 func (m Model) selectedSessionName() string {
