@@ -13,9 +13,11 @@ type PlasmaModel struct {
 	Frame int
 }
 
-func NewPlasmaModel() PlasmaModel {
-	return PlasmaModel{}
+func NewPlasmaModel() *PlasmaModel {
+	return &PlasmaModel{}
 }
+
+func (m *PlasmaModel) Name() string { return "Plasma" }
 
 func (m *PlasmaModel) Tick() {
 	m.Frame++

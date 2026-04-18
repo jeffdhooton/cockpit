@@ -27,7 +27,7 @@ const (
 	PanelRepos
 	PanelToday
 	PanelInbox
-	PanelPlasma
+	PanelViz
 	panelCount // sentinel
 )
 
@@ -39,6 +39,7 @@ const (
 	ModeCapture
 	ModeNewSession
 	ModeSearch
+	ModeVizPicker
 )
 
 // Layout holds calculated panel dimensions.
@@ -169,7 +170,7 @@ type Model struct {
 	repos          ReposModel
 	tasks          TasksModel
 	inbox          InboxModel
-	plasma         PlasmaModel
+	viz            VizModel
 	github         *sources.GitHubStatus
 	sessionPreview string
 	lastPreviewSession string
@@ -187,6 +188,9 @@ type Model struct {
 	searchInput   textinput.Model
 	searchResults []int // indices into sessions.Sessions
 	searchCursor  int
+
+	// Visualizer picker (V key)
+	vizPickerCursor int
 }
 
 // NewModel creates a new root model with the given config.
@@ -209,7 +213,7 @@ func NewModel(cfg *config.Config, configPath string) Model {
 		repos:           NewReposModel(),
 		tasks:           NewTasksModel(),
 		inbox:           InboxModel{Loading: true, FilePath: cfg.Obsidian.InboxFile},
-		plasma:          NewPlasmaModel(),
+		viz:             NewVizModel(),
 		newSessionInput: ti,
 		searchInput:     si,
 	}
@@ -228,7 +232,7 @@ type (
 	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
 	localTickMsg        struct{}
 	remoteTickMsg       struct{}
-	plasmaTickMsg       struct{}
+	vizTickMsg          struct{}
 	clearErrMsg         struct{}
 	configSaveResultMsg struct{ Err error }
 )
@@ -242,7 +246,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchGitHub(),
 		m.localTick(),
 		m.remoteTick(),
-		m.plasmaTick(),
+		m.vizTick(),
 	)
 }
 
@@ -289,6 +293,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repos.Repos = msg.Repos
 		m.repos.Loading = false
 		m.layout = CalculateLayout(m.width, m.height, len(m.repos.Repos))
+		m.viz.SetRepos(msg.Repos)
 
 	case tasksDataMsg:
 		// Filter out completed tasks — they get cleaned from the view automatically
@@ -364,9 +369,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remoteTick(),
 		)
 
-	case plasmaTickMsg:
-		m.plasma.Tick()
-		cmds = append(cmds, m.plasmaTick())
+	case vizTickMsg:
+		m.viz.Tick()
+		cmds = append(cmds, m.vizTick())
 
 	case tmuxSwitchResultMsg:
 		if msg.Err != nil {
@@ -427,6 +432,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleNewSessionKey(msg)
 	case ModeSearch:
 		return m.handleSearchKey(msg)
+	case ModeVizPicker:
+		return m.handleVizPickerKey(msg)
 	default:
 		return m.handleNavKey(msg)
 	}
@@ -461,6 +468,28 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 	case "s":
 		if m.focused == PanelSessions && len(m.sessions.Sessions) > 0 {
 			return m.saveSessionAsRepo()
+		}
+	case "v":
+		m.viz.Next()
+		return nil
+	case "V":
+		m.mode = ModeVizPicker
+		m.vizPickerCursor = m.viz.Current
+		return nil
+	case "p":
+		if c := m.viz.ActiveClock(); c != nil {
+			c.TogglePomo()
+			return nil
+		}
+	case "R":
+		if c := m.viz.ActiveClock(); c != nil {
+			c.Reset()
+			return nil
+		}
+	case ".":
+		if c := m.viz.ActiveClock(); c != nil {
+			c.SkipPhase()
+			return nil
 		}
 	case "n":
 		m.mode = ModeNewSession
@@ -817,14 +846,14 @@ func (m Model) View() string {
 
 	middleRow := lipgloss.JoinHorizontal(lipgloss.Top, reposPanel, tasksPanel)
 
-	// === Bottom row: Notes (2/3) | Garden (1/3) ===
+	// === Bottom row: Notes (2/3) | Visualizer (1/3) ===
 	inboxPanel := RenderPanel("Notes",
 		m.inbox.View(m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox),
 		m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox)
-	plasmaPanel := RenderPanel("Plasma",
-		m.plasma.View(m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelPlasma),
-		m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelPlasma)
-	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, plasmaPanel)
+	vizPanel := RenderPanel(m.viz.Name(),
+		m.viz.View(m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelViz),
+		m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelViz)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, vizPanel)
 
 	// Key hints
 	keyhints := KeyhintsView(m.mode, m.focused, m.width)
@@ -850,6 +879,14 @@ func (m Model) View() string {
 	// Overlay search dialog
 	if m.mode == ModeSearch {
 		dialog := m.renderSearchDialog()
+		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
+			lipgloss.WithWhitespaceChars(" "),
+			lipgloss.WithWhitespaceForeground(ColorBg))
+	}
+
+	// Overlay viz picker
+	if m.mode == ModeVizPicker {
+		dialog := m.renderVizPickerDialog()
 		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
 			lipgloss.WithWhitespaceChars(" "),
 			lipgloss.WithWhitespaceForeground(ColorBg))
@@ -967,9 +1004,9 @@ func (m Model) remoteTick() tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return remoteTickMsg{} })
 }
 
-// plasmaTick drives the plasma field animation at ~16fps.
-func (m Model) plasmaTick() tea.Cmd {
-	return tea.Tick(time.Second/16, func(time.Time) tea.Msg { return plasmaTickMsg{} })
+// vizTick drives visualizer animation at ~16fps.
+func (m Model) vizTick() tea.Cmd {
+	return tea.Tick(time.Second/16, func(time.Time) tea.Msg { return vizTickMsg{} })
 }
 
 func (m Model) selectedSessionName() string {
@@ -1027,6 +1064,69 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	return nil
+}
+
+func (m *Model) handleVizPickerKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "V", "q":
+		m.mode = ModeNavigation
+		return nil
+	case "enter":
+		m.viz.Select(m.vizPickerCursor)
+		m.mode = ModeNavigation
+		return nil
+	case "up", "k", "ctrl+k":
+		if m.vizPickerCursor > 0 {
+			m.vizPickerCursor--
+		}
+		return nil
+	case "down", "j", "ctrl+j":
+		if m.vizPickerCursor < len(m.viz.Visualizers)-1 {
+			m.vizPickerCursor++
+		}
+		return nil
+	}
+	return nil
+}
+
+func (m *Model) renderVizPickerDialog() string {
+	dialogW := 40
+	if m.width < 44 {
+		dialogW = m.width - 4
+	}
+
+	var lines []string
+	lines = append(lines, AccentText.Bold(true).Render("Visualizer"))
+	lines = append(lines, "")
+
+	for i, v := range m.viz.Visualizers {
+		name := v.Name()
+		marker := "   "
+		if i == m.viz.Current {
+			marker = MutedText.Render(" • ")
+		}
+		line := marker + name
+		if i == m.vizPickerCursor {
+			line = AccentText.Bold(true).Render("▸ ") + AccentText.Bold(true).Render(name)
+			if i == m.viz.Current {
+				line = AccentText.Bold(true).Render("▸") + MutedText.Render("•") + AccentText.Bold(true).Render(name)
+			}
+		}
+		lines = append(lines, "  "+line)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, MutedText.Render("  ↑↓ navigate  Enter select  Esc cancel"))
+
+	content := strings.Join(lines, "\n")
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Padding(1, 2).
+		Width(dialogW)
+
+	return style.Render(content)
 }
 
 func (m *Model) updateSearchResults() {

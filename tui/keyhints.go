@@ -22,6 +22,12 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 			{"Ctrl+S", "save+jump"},
 			{"Esc", "back/cancel"},
 		}
+	case ModeVizPicker:
+		hints = []hint{
+			{"↑↓", "nav"},
+			{"Enter", "select"},
+			{"Esc", "cancel"},
+		}
 	default: // ModeNavigation
 		hints = []hint{
 			{"Tab", "panels"},
@@ -30,6 +36,8 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 			{"x", "toggle"},
 			{"c", "cap"},
 			{"n", "new"},
+			{"v", "viz"},
+			{"V", "pick"},
 		}
 		if focused == PanelSessions {
 			hints = append(hints, hint{"s", "save"})
