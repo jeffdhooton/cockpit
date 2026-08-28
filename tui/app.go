@@ -338,6 +338,7 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	modeBefore := m.mode
+	launchStepBefore := m.launchStep
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -558,9 +559,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Forward messages to the launch prompt input on the final step — skip
-	// the key that entered the mode
-	if modeBefore == ModeBuildLaunch && m.launchStep == 3 {
+	// Forward messages to the launch prompt input, but only for keys that
+	// arrive while the dialog is already on the prompt step — the Enter that
+	// advances step 2→3 is consumed by the step machine, not the input.
+	if modeBefore == ModeBuildLaunch && launchStepBefore == 3 {
 		if _, ok := msg.(tea.KeyMsg); ok {
 			var cmd tea.Cmd
 			m.launchInput, cmd = m.launchInput.Update(msg)
@@ -852,8 +854,10 @@ func (m *Model) labelExists(label string) bool {
 			return true
 		}
 	}
+	// Only legacy tmux names collide with a new legacy session label. A Build
+	// display title matching the label is fine — identities are source-scoped.
 	for _, s := range m.sessions.Sessions {
-		if s.DisplayName() == label {
+		if s.Source == SourceLegacy && s.Legacy != nil && s.Legacy.Name == label {
 			return true
 		}
 	}
@@ -1294,8 +1298,11 @@ func (m Model) vizTick() tea.Cmd {
 // cursor in range.
 func (m *Model) remerge() {
 	m.sessions.Sessions = MergeSessions(m.legacySessions, m.buildSessions)
-	if m.sessions.Cursor >= len(m.sessions.Sessions) && m.sessions.Cursor > 0 {
+	if m.sessions.Cursor >= len(m.sessions.Sessions) {
 		m.sessions.Cursor = len(m.sessions.Sessions) - 1
+		if m.sessions.Cursor < 0 {
+			m.sessions.Cursor = 0
+		}
 	}
 }
 
@@ -1569,8 +1576,6 @@ func (m *Model) renderSearchDialog() string {
 	return style.Render(content)
 }
 
-// fetchSessionStatuses polls pane content for legacy sessions only. Build
-// session status comes from the contract — never from pane scraping.
 // handleBuildLaunchKey drives the multi-step Build launch dialog:
 // project → agent → permission → optional prompt.
 func (m *Model) handleBuildLaunchKey(msg tea.KeyMsg) tea.Cmd {
@@ -1755,6 +1760,8 @@ func choicePill(label string, selected bool) string {
 	return MutedText.Render(" " + label + " ")
 }
 
+// fetchSessionStatuses polls pane content for legacy sessions only. Build
+// session status comes from the contract — never from pane scraping.
 func (m Model) fetchSessionStatuses() tea.Cmd {
 	var legacy []sources.TmuxSession
 	for _, s := range m.sessions.Sessions {

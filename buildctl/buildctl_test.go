@@ -497,12 +497,12 @@ func TestResolveCommandMissing(t *testing.T) {
 }
 
 func TestBoundedOutput(t *testing.T) {
-	// Emit more than the 4 MiB bound; the client must fail rather than
-	// buffer unbounded output.
+	// Emit more than the 4 MiB bound; the client must reject the response as
+	// malformed rather than buffer unbounded output.
 	cmd, _ := writeFake(t, "dd if=/dev/zero bs=1024 count=5000 2>/dev/null | tr '\\0' 'x'")
 	c := &Client{Command: cmd}
 	_, err := c.ListSessions(context.Background())
-	if err == nil {
-		t.Fatal("expected error for unbounded output")
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("error = %v, want ErrMalformed for over-bound output", err)
 	}
 }

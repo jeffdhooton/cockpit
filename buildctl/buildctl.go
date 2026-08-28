@@ -437,8 +437,10 @@ func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte
 	cmd := exec.CommandContext(ctx, c.Command, args...)
 
 	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &boundedWriter{w: &outBuf, limit: maxEnvelopeSize}
-	cmd.Stderr = &boundedWriter{w: &errBuf, limit: maxEnvelopeSize}
+	outW := &boundedWriter{w: &outBuf, limit: maxEnvelopeSize}
+	errW := &boundedWriter{w: &errBuf, limit: maxEnvelopeSize}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
 
 	runErr := cmd.Run()
 
@@ -448,6 +450,16 @@ func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte
 	}
 	if ctx.Err() == context.Canceled {
 		return nil, nil, -1, &Error{Kind: KindCanceled, Message: "canceled", ExitCode: -1}
+	}
+
+	// A response that overruns the bound is rejected as malformed, however
+	// the child reacted to the failed write.
+	if outW.overflowed || errW.overflowed {
+		return nil, nil, -1, &Error{
+			Kind:     KindMalformed,
+			Message:  fmt.Sprintf("output exceeds %d byte bound", maxEnvelopeSize),
+			ExitCode: -1,
+		}
 	}
 
 	if runErr != nil {
@@ -540,13 +552,15 @@ func kindForExitCode(code int) Kind {
 // boundedWriter fails the write once limit bytes have been accepted, which
 // aborts the child process instead of letting it flood memory.
 type boundedWriter struct {
-	w       io.Writer
-	limit   int
-	written int
+	w          io.Writer
+	limit      int
+	written    int
+	overflowed bool
 }
 
 func (b *boundedWriter) Write(p []byte) (int, error) {
 	if b.written+len(p) > b.limit {
+		b.overflowed = true
 		return 0, fmt.Errorf("buildctl: output exceeds %d byte bound", b.limit)
 	}
 	n, err := b.w.Write(p)
