@@ -92,32 +92,28 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
 	}
 
 	// Claude Code status indicator (from content-hash diffing)
-	statusText := MutedText.Render("detached")
+	statusText := StatusDot("Detached", VariantMuted)
 	if s.Attached {
-		statusText = SuccessText.Render("attached")
+		statusText = StatusDot("Attached", VariantAccent)
 	}
 	if st, ok := m.Statuses[s.Name]; ok {
 		switch st {
 		case sources.ClaudeStatusIdle:
-			statusText = ErrorText.Render("● idle")
+			statusText = StatusDot("Idle", VariantMuted)
 		case sources.ClaudeStatusWorking:
-			statusText = SuccessText.Render("● working")
+			statusText = StatusDot("Working", VariantAccent)
 		}
 	}
 
 	idle := formatIdleTime(s.LastUsed)
-	info := fmt.Sprintf("%dw %s", s.Windows, MutedText.Render(idle))
+	info := MutedText.Render(fmt.Sprintf("%dw", s.Windows))
+	if idle != "" {
+		info += MutedText.Render(" · " + idle)
+	}
 
+	// Chrome stays subtle — only the selected card lifts to the accent border.
 	border := lipgloss.RoundedBorder()
 	borderColor := ColorBorder
-	if st, ok := m.Statuses[s.Name]; ok {
-		switch st {
-		case sources.ClaudeStatusIdle:
-			borderColor = ColorError
-		case sources.ClaudeStatusWorking:
-			borderColor = ColorSuccess
-		}
-	}
 	if selected {
 		borderColor = ColorAccent
 	}
@@ -161,28 +157,27 @@ func (m SessionsModel) CompactView(width int, focused bool) string {
 
 	var lines []string
 	for i, s := range m.Sessions {
+		selected := i == m.Cursor && focused
 		nameStyle := lipgloss.NewStyle().Foreground(ColorFg)
-		cursor := "  "
-		if i == m.Cursor && focused {
+		if selected {
 			nameStyle = nameStyle.Foreground(ColorAccent)
-			cursor = AccentText.Render("◂ ")
 		}
 
-		status := MutedText.Render("detached")
+		status := StatusDot("Detached", VariantMuted)
 		if s.Attached {
-			status = SuccessText.Render("attached")
+			status = StatusDot("Attached", VariantAccent)
 		}
 		if st, ok := m.Statuses[s.Name]; ok {
 			switch st {
 			case sources.ClaudeStatusIdle:
-				status = ErrorText.Render("● idle")
+				status = StatusDot("Idle", VariantMuted)
 			case sources.ClaudeStatusWorking:
-				status = SuccessText.Render("● working")
+				status = StatusDot("Working", VariantAccent)
 			}
 		}
 
-		line := fmt.Sprintf("%s%s [%s] %dw",
-			cursor, nameStyle.Render(s.Name), status, s.Windows)
+		line := RowCursor(selected) + nameStyle.Render(s.Name) + "  " +
+			status + MutedText.Render(fmt.Sprintf("  %dw", s.Windows))
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")

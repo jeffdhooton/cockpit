@@ -100,16 +100,13 @@ func (m InboxModel) View(width, height int, focused bool) string {
 			var lines []string
 			for i, item := range items {
 				globalIdx := start + startIdx + i
-				prefix := "  "
-				if globalIdx == m.Cursor && focused {
-					prefix = AccentText.Render("◂ ")
-				}
+				prefix := RowCursor(globalIdx == m.Cursor && focused)
 				text := item.Text
 				maxText := colW - 6 // prefix(2) + checkbox(4)
 				if maxText > 0 && len(text) > maxText {
 					text = text[:maxText-1] + "…"
 				}
-				lines = append(lines, prefix+"[ ] "+text)
+				lines = append(lines, prefix+MutedText.Render("○")+" "+text)
 			}
 			// Pad to visibleRows so columns align
 			for len(lines) < visibleRows {
@@ -150,11 +147,8 @@ func (m InboxModel) View(width, height int, focused bool) string {
 	var lines []string
 	for i := start; i < end; i++ {
 		item := m.Items[i]
-		prefix := "  "
-		if i == m.Cursor && focused {
-			prefix = AccentText.Render("◂ ")
-		}
-		lines = append(lines, prefix+"[ ] "+item.Text)
+		prefix := RowCursor(i == m.Cursor && focused)
+		lines = append(lines, prefix+MutedText.Render("○")+" "+item.Text)
 	}
 
 	return strings.Join(lines, "\n")

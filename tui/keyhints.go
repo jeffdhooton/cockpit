@@ -51,8 +51,9 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 	var parts []string
 	totalLen := 0
 	for _, h := range hints {
-		part := AccentText.Render(h.key) + " " + MutedText.Render(h.desc)
-		plainLen := len(h.key) + 1 + len(h.desc) + 2
+		key := strings.ToUpper(h.key)
+		part := AccentText.Render(key) + " " + MutedText.Render(h.desc)
+		plainLen := len(key) + 1 + len(h.desc) + 3 // + separator
 		if totalLen+plainLen > width && len(parts) > 0 {
 			break // truncate from right
 		}
@@ -60,5 +61,6 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 		totalLen += plainLen
 	}
 
-	return "  " + strings.Join(parts, "  ")
+	sep := MutedText.Render(" · ")
+	return "  " + strings.Join(parts, sep)
 }

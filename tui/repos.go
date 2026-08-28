@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jhoot/cockpit/sources"
 )
 
@@ -59,19 +60,21 @@ func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) 
 	branchW := 14
 	statusW := 6
 	unpushedW := 4
-	commitW := innerWidth - labelW - branchW - statusW - unpushedW - 4 // gaps
+	// Budget: 4 inter-column gaps + the 2-cell row cursor prefix. Omitting the
+	// cursor overflows the panel and soft-wraps every long commit subject.
+	commitW := innerWidth - labelW - branchW - statusW - unpushedW - 4 - 2
 	if commitW < 0 || !showLastCommit {
 		commitW = 0
 	}
 
 	// Header
-	header := MutedText.Bold(true).Render(
-		padRight("PROJECT", labelW) + " " +
-			padRight("BRANCH", branchW) + " " +
-			padRight("STATUS", statusW) + " " +
+	header := "  " + MutedText.Render(
+		padRight("PROJECT", labelW)+" "+
+			padRight("BRANCH", branchW)+" "+
+			padRight("STATUS", statusW)+" "+
 			padRight("↑", unpushedW))
 	if commitW > 0 {
-		header += " " + MutedText.Bold(true).Render(padRight("LAST COMMIT", commitW))
+		header += " " + MutedText.Render(padRight("LAST COMMIT", commitW))
 	}
 
 	// Available content lines: height - 2 (borders) - 1 (panel title) - 1 (header)
@@ -131,21 +134,18 @@ func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) 
 		r := m.Repos[i]
 		selected := i == m.Cursor && focused
 
-		cursor := "  "
-		if selected {
-			cursor = AccentText.Render("◂ ")
-		}
+		cursor := RowCursor(selected)
 
 		label := Truncate(r.Label, labelW)
 		branch := PurpleText.Render(Truncate(r.Branch, branchW))
 
 		var status string
 		if r.Error != nil {
-			status = WarningText.Render("⚠ err")
+			status = WarningText.Render("● err")
 		} else if r.Dirty {
-			status = StatusDirty.Render(fmt.Sprintf("✗%d", r.DirtyCount))
+			status = StatusDirty.Render(fmt.Sprintf("● %d", r.DirtyCount))
 		} else {
-			status = StatusClean.Render("✓")
+			status = StatusClean.Render("●")
 		}
 
 		unpushed := ""
@@ -176,9 +176,12 @@ func (m *ReposModel) View(width, height int, focused bool, showLastCommit bool) 
 	return strings.Join(lines, "\n")
 }
 
+// padRight pads s to width using its rendered cell width, so styled strings
+// (which carry ANSI escapes) pad correctly rather than counting escape bytes.
 func padRight(s string, width int) string {
-	if len(s) >= width {
+	w := lipgloss.Width(s)
+	if w >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-w)
 }

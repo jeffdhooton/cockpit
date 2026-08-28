@@ -94,17 +94,14 @@ func (m *TasksModel) View(width, height int, focused bool) string {
 		task := m.Tasks[i]
 		selected := i == m.Cursor && focused
 
-		cursor := "  "
-		if selected {
-			cursor = AccentText.Render("◂ ")
-		}
+		cursor := RowCursor(selected)
 
 		var checkbox, text string
 		if task.Done {
-			checkbox = SuccessText.Render("[x]")
-			text = MutedText.Render(task.Text)
+			checkbox = SuccessText.Render("✓")
+			text = MutedText.Strikethrough(true).Render(task.Text)
 		} else {
-			checkbox = "[ ]"
+			checkbox = MutedText.Render("○")
 			text = task.Text
 		}
 

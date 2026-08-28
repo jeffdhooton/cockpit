@@ -803,7 +803,7 @@ func (m Model) View() string {
 		previewMaxLines = 2
 	}
 	if m.sessionPreview != "" {
-		previewHeader := MutedText.Render("─── " + m.selectedSessionName() + " ")
+		previewHeader := m.renderPreviewHeader(m.width - 4)
 		// Inner width: panel width minus border (2) minus padding (2)
 		innerW := m.width - 4
 		if innerW < 20 {
@@ -893,6 +893,34 @@ func (m Model) View() string {
 	}
 
 	return page
+}
+
+// renderPreviewHeader renders the toolbar above the session preview: a muted
+// breadcrumb on the left, a status dot on the right, with a rule between them.
+func (m Model) renderPreviewHeader(width int) string {
+	name := m.selectedSessionName()
+	crumb := Breadcrumb("local", name)
+
+	status := ""
+	if st, ok := m.sessions.Statuses[name]; ok {
+		switch st {
+		case sources.ClaudeStatusIdle:
+			status = StatusDot("Idle", VariantMuted)
+		case sources.ClaudeStatusWorking:
+			status = StatusDot("Working", VariantAccent)
+		}
+	}
+
+	left := crumb
+	if status != "" {
+		left += "  " + status
+	}
+
+	pad := width - lipgloss.Width(left) - 1
+	if pad < 1 {
+		return left
+	}
+	return left + " " + MutedText.Render(strings.Repeat("─", pad))
 }
 
 func (m *Model) renderNewSessionDialog() string {
