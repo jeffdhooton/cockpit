@@ -109,6 +109,24 @@ type ErrorInfo struct {
 	Retryable bool   `json:"retryable"`
 }
 
+// UnmarshalJSON preserves required-field presence. Plain Go zero values cannot
+// distinguish a missing boolean/string from an explicitly supplied value.
+func (e *ErrorInfo) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Code      *string `json:"code"`
+		Message   *string `json:"message"`
+		Retryable *bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.Code == nil || wire.Message == nil || wire.Retryable == nil {
+		return fmt.Errorf("error object missing required field")
+	}
+	*e = ErrorInfo{Code: *wire.Code, Message: *wire.Message, Retryable: *wire.Retryable}
+	return nil
+}
+
 // envelope is the wire shape of every --json response. Pointers detect
 // missing required fields so partial envelopes are rejected as a whole.
 type envelope struct {
@@ -137,6 +155,84 @@ type Session struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+// UnmarshalJSON rejects a partial session before zero values can make missing
+// v1 fields look like explicit false/empty values. Unknown fields remain
+// allowed for forward compatibility.
+func (s *Session) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ConversationID *string         `json:"conversation_id"`
+		RunID          json.RawMessage `json:"run_id"`
+		ProjectID      *string         `json:"project_id"`
+		ProjectLabel   *string         `json:"project_label"`
+		Title          *string         `json:"title"`
+		Agent          *string         `json:"agent"`
+		HostID         *string         `json:"host_id"`
+		HostLabel      *string         `json:"host_label"`
+		HostKind       *string         `json:"host_kind"`
+		Status         *string         `json:"status"`
+		Live           *bool           `json:"live"`
+		Attachable     *bool           `json:"attachable"`
+		Resumable      *bool           `json:"resumable"`
+		UpdatedAt      *time.Time      `json:"updated_at"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	missing := ""
+	for _, field := range []struct {
+		name    string
+		present bool
+	}{
+		{"conversation_id", wire.ConversationID != nil},
+		{"run_id", len(wire.RunID) > 0},
+		{"project_id", wire.ProjectID != nil},
+		{"project_label", wire.ProjectLabel != nil},
+		{"title", wire.Title != nil},
+		{"agent", wire.Agent != nil},
+		{"host_id", wire.HostID != nil},
+		{"host_label", wire.HostLabel != nil},
+		{"host_kind", wire.HostKind != nil},
+		{"status", wire.Status != nil},
+		{"live", wire.Live != nil},
+		{"attachable", wire.Attachable != nil},
+		{"resumable", wire.Resumable != nil},
+		{"updated_at", wire.UpdatedAt != nil},
+	} {
+		if !field.present {
+			missing = field.name
+			break
+		}
+	}
+	if missing != "" {
+		return fmt.Errorf("missing required field %s", missing)
+	}
+	var runID *string
+	if !bytes.Equal(bytes.TrimSpace(wire.RunID), []byte("null")) {
+		var value string
+		if err := json.Unmarshal(wire.RunID, &value); err != nil {
+			return fmt.Errorf("run_id: %w", err)
+		}
+		runID = &value
+	}
+	*s = Session{
+		ConversationID: *wire.ConversationID,
+		RunID:          runID,
+		ProjectID:      *wire.ProjectID,
+		ProjectLabel:   *wire.ProjectLabel,
+		Title:          *wire.Title,
+		Agent:          *wire.Agent,
+		HostID:         *wire.HostID,
+		HostLabel:      *wire.HostLabel,
+		HostKind:       *wire.HostKind,
+		Status:         *wire.Status,
+		Live:           *wire.Live,
+		Attachable:     *wire.Attachable,
+		Resumable:      *wire.Resumable,
+		UpdatedAt:      *wire.UpdatedAt,
+	}
+	return nil
+}
+
 // validStatuses is the closed v1 status enum.
 var validStatuses = map[string]bool{
 	"starting":     true,
@@ -158,11 +254,62 @@ type Project struct {
 	Archived  bool   `json:"archived"`
 }
 
+// UnmarshalJSON enforces presence of every frozen-v1 project field.
+func (p *Project) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID        *string `json:"id"`
+		Label     *string `json:"label"`
+		RootPath  *string `json:"root_path"`
+		HostID    *string `json:"host_id"`
+		HostLabel *string `json:"host_label"`
+		HostKind  *string `json:"host_kind"`
+		Archived  *bool   `json:"archived"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.ID == nil || wire.Label == nil || wire.RootPath == nil || wire.HostID == nil ||
+		wire.HostLabel == nil || wire.HostKind == nil || wire.Archived == nil {
+		return fmt.Errorf("project missing required field")
+	}
+	*p = Project{
+		ID:        *wire.ID,
+		Label:     *wire.Label,
+		RootPath:  *wire.RootPath,
+		HostID:    *wire.HostID,
+		HostLabel: *wire.HostLabel,
+		HostKind:  *wire.HostKind,
+		Archived:  *wire.Archived,
+	}
+	return nil
+}
+
 // VersionInfo is the data payload of `buildctl version --json`.
 type VersionInfo struct {
 	CLIVersion              string `json:"cli_version"`
 	SupportedSchemaVersions []int  `json:"supported_schema_versions"`
 	ServerAvailable         bool   `json:"server_available"`
+}
+
+// UnmarshalJSON enforces presence of every frozen-v1 version field.
+func (v *VersionInfo) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		CLIVersion              *string `json:"cli_version"`
+		SupportedSchemaVersions *[]int  `json:"supported_schema_versions"`
+		ServerAvailable         *bool   `json:"server_available"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	if wire.CLIVersion == nil || wire.SupportedSchemaVersions == nil || wire.ServerAvailable == nil {
+		return fmt.Errorf("version data missing required field")
+	}
+	*v = VersionInfo{
+		CLIVersion:              *wire.CLIVersion,
+		SupportedSchemaVersions: *wire.SupportedSchemaVersions,
+		ServerAvailable:         *wire.ServerAvailable,
+	}
+	return nil
 }
 
 // SupportsV1 reports whether the CLI advertises schema version 1.
@@ -264,20 +411,23 @@ func (c *Client) Version(ctx context.Context) (VersionInfo, error) {
 // every row. Any malformed row rejects the entire response.
 func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 	var data struct {
-		Sessions []Session `json:"sessions"`
+		Sessions *[]Session `json:"sessions"`
 	}
 	if err := c.runJSON(ctx, &data, "session", "list", "--json"); err != nil {
 		return nil, err
 	}
-	for i, s := range data.Sessions {
+	if data.Sessions == nil {
+		return nil, &Error{Kind: KindMalformed, Message: "session list missing sessions", ExitCode: 0}
+	}
+	for i, s := range *data.Sessions {
 		if err := validateSession(s); err != nil {
 			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: %s", i, err), ExitCode: 0}
 		}
 	}
 	// Duplicate (conversation, run) pairs are contradictory identities:
 	// reject the whole response rather than guess which record is real.
-	seen := make(map[string]bool, len(data.Sessions))
-	for i, s := range data.Sessions {
+	seen := make(map[string]bool, len(*data.Sessions))
+	for i, s := range *data.Sessions {
 		run := ""
 		if s.RunID != nil {
 			run = *s.RunID
@@ -288,7 +438,7 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 		}
 		seen[k] = true
 	}
-	return data.Sessions, nil
+	return *data.Sessions, nil
 }
 
 // validateSession enforces the invariants Cockpit relies on, identically for
@@ -299,6 +449,20 @@ func validateSession(s Session) error {
 	}
 	if s.RunID != nil && *s.RunID == "" {
 		return fmt.Errorf("empty run_id")
+	}
+	for name, value := range map[string]string{
+		"project_id": s.ProjectID,
+		"host_id":    s.HostID,
+	} {
+		if value == "" {
+			return fmt.Errorf("empty %s", name)
+		}
+	}
+	if s.Agent != "claude" && s.Agent != "codex" {
+		return fmt.Errorf("unknown agent %q", s.Agent)
+	}
+	if s.HostKind != "local" && s.HostKind != "ssh" {
+		return fmt.Errorf("unknown host_kind %q", s.HostKind)
 	}
 	if !validStatuses[s.Status] {
 		return fmt.Errorf("unknown status %q", s.Status)
@@ -312,17 +476,26 @@ func validateSession(s Session) error {
 // ListProjects runs `buildctl project list --json`.
 func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	var data struct {
-		Projects []Project `json:"projects"`
+		Projects *[]Project `json:"projects"`
 	}
 	if err := c.runJSON(ctx, &data, "project", "list", "--json"); err != nil {
 		return nil, err
 	}
-	for i, p := range data.Projects {
+	if data.Projects == nil {
+		return nil, &Error{Kind: KindMalformed, Message: "project list missing projects", ExitCode: 0}
+	}
+	for i, p := range *data.Projects {
 		if p.ID == "" {
 			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("project %d: empty id", i), ExitCode: 0}
 		}
+		if p.HostID == "" {
+			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("project %d: empty host_id", i), ExitCode: 0}
+		}
+		if p.HostKind != "local" && p.HostKind != "ssh" {
+			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("project %d: unknown host_kind %q", i, p.HostKind), ExitCode: 0}
+		}
 	}
-	return data.Projects, nil
+	return *data.Projects, nil
 }
 
 // Launch runs `buildctl session launch --json` with validated arguments.

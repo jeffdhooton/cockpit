@@ -2,6 +2,7 @@ package buildctl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -62,6 +63,15 @@ func serveFixture(t *testing.T, name string) string {
 	return fmt.Sprintf("cat %q", filepath.Join(testdataDir(t), name))
 }
 
+func serveJSON(t *testing.T, value any) string {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "cat <<'BUILDCTL_JSON'\n" + string(body) + "\nBUILDCTL_JSON"
+}
+
 func TestVersionOK(t *testing.T) {
 	cmd, _ := writeFake(t, serveFixture(t, "valid_version.json"))
 	c := &Client{Command: cmd}
@@ -115,6 +125,137 @@ func TestListSessionsForwardCompatible(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].Status != "working" {
 		t.Errorf("unexpected sessions: %+v", sessions)
+	}
+}
+
+func TestListSessionsRejectsEveryMissingRequiredField(t *testing.T) {
+	base := map[string]any{
+		"conversation_id": "conversation-uuid",
+		"run_id":          nil,
+		"project_id":      "project-uuid",
+		"project_label":   "program-health",
+		"title":           "Fix admissions provenance",
+		"agent":           "codex",
+		"host_id":         "host-uuid",
+		"host_label":      "Local",
+		"host_kind":       "local",
+		"status":          "idle",
+		"live":            false,
+		"attachable":      false,
+		"resumable":       true,
+		"updated_at":      "2026-08-27T21:00:00Z",
+	}
+	for field := range base {
+		t.Run(field, func(t *testing.T) {
+			row := make(map[string]any, len(base)-1)
+			for name, value := range base {
+				if name != field {
+					row[name] = value
+				}
+			}
+			cmd, _ := writeFake(t, serveJSON(t, map[string]any{
+				"schema_version": 1,
+				"ok":             true,
+				"data":           map[string]any{"sessions": []any{row}},
+			}))
+			got, err := (&Client{Command: cmd}).ListSessions(context.Background())
+			if !errors.Is(err, ErrMalformed) {
+				t.Fatalf("missing %s: error = %v, want ErrMalformed (sessions: %+v)", field, err, got)
+			}
+			if got != nil {
+				t.Fatalf("missing %s leaked partial sessions: %+v", field, got)
+			}
+		})
+	}
+}
+
+func TestOtherRequiredResponseFieldsRejectMissingValues(t *testing.T) {
+	t.Run("sessions collection", func(t *testing.T) {
+		cmd, _ := writeFake(t, serveJSON(t, map[string]any{
+			"schema_version": 1,
+			"ok":             true,
+			"data":           map[string]any{},
+		}))
+		if _, err := (&Client{Command: cmd}).ListSessions(context.Background()); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("error = %v, want ErrMalformed", err)
+		}
+	})
+	t.Run("projects collection", func(t *testing.T) {
+		cmd, _ := writeFake(t, serveJSON(t, map[string]any{
+			"schema_version": 1,
+			"ok":             true,
+			"data":           map[string]any{},
+		}))
+		if _, err := (&Client{Command: cmd}).ListProjects(context.Background()); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("error = %v, want ErrMalformed", err)
+		}
+	})
+
+	project := map[string]any{
+		"id":         "project-uuid",
+		"label":      "program-health",
+		"root_path":  "/tmp/project",
+		"host_id":    "host-uuid",
+		"host_label": "Local",
+		"host_kind":  "local",
+		"archived":   false,
+	}
+	for field := range project {
+		t.Run("project "+field, func(t *testing.T) {
+			row := make(map[string]any, len(project)-1)
+			for name, value := range project {
+				if name != field {
+					row[name] = value
+				}
+			}
+			cmd, _ := writeFake(t, serveJSON(t, map[string]any{
+				"schema_version": 1,
+				"ok":             true,
+				"data":           map[string]any{"projects": []any{row}},
+			}))
+			if _, err := (&Client{Command: cmd}).ListProjects(context.Background()); !errors.Is(err, ErrMalformed) {
+				t.Fatalf("error = %v, want ErrMalformed", err)
+			}
+		})
+	}
+
+	version := map[string]any{
+		"cli_version":               "0.1.0",
+		"supported_schema_versions": []int{1},
+		"server_available":          false,
+	}
+	for field := range version {
+		t.Run("version "+field, func(t *testing.T) {
+			data := make(map[string]any, len(version)-1)
+			for name, value := range version {
+				if name != field {
+					data[name] = value
+				}
+			}
+			cmd, _ := writeFake(t, serveJSON(t, map[string]any{
+				"schema_version": 1,
+				"ok":             true,
+				"data":           data,
+			}))
+			if _, err := (&Client{Command: cmd}).Version(context.Background()); !errors.Is(err, ErrMalformed) {
+				t.Fatalf("error = %v, want ErrMalformed", err)
+			}
+		})
+	}
+
+	for _, field := range []string{"code", "message", "retryable"} {
+		t.Run("error "+field, func(t *testing.T) {
+			errorData := map[string]any{"code": "build_unavailable", "message": "down", "retryable": true}
+			delete(errorData, field)
+			cmd, _ := writeFake(t, serveJSON(t, map[string]any{
+				"schema_version": 1,
+				"ok":             false,
+				"error":          errorData,
+			}))
+			if _, err := (&Client{Command: cmd}).ListSessions(context.Background()); !errors.Is(err, ErrMalformed) {
+				t.Fatalf("error = %v, want ErrMalformed", err)
+			}
+		})
 	}
 }
 
