@@ -636,12 +636,14 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 	case "q":
 		return tea.Quit
 	case "r":
+		m.buildGen++
 		return tea.Batch(
 			m.fetchTmux(),
 			m.fetchGit(),
 			m.fetchTasks(),
 			m.fetchInbox(),
 			m.fetchGitHub(),
+			m.fetchBuild(),
 		)
 	case "s":
 		if m.focused == PanelSessions && len(m.sessions.Sessions) > 0 {

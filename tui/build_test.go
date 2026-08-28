@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jhoot/cockpit/buildctl"
 	"github.com/jhoot/cockpit/sources"
 )
@@ -27,9 +28,11 @@ type fakeBuildClient struct {
 	launched []buildctl.LaunchOptions
 	resumed  []string
 	attached []string
+	listed   int
 }
 
 func (f *fakeBuildClient) ListSessions(context.Context) ([]buildctl.Session, error) {
+	f.listed++
 	return f.sessions, f.sessErr
 }
 
@@ -71,6 +74,35 @@ func newBuildTestModel(t *testing.T) Model {
 	m.height = 40
 	m.layout = CalculateLayout(100, 40, 0)
 	return m
+}
+
+// TestManualRefreshIncludesBuild pins the real Goal 1C restart path: the
+// advertised r action must refresh contract-owned Build state immediately,
+// not wait for the periodic local tick after Build comes back.
+func TestManualRefreshIncludesBuild(t *testing.T) {
+	m := newBuildTestModel(t)
+	fake := &fakeBuildClient{}
+	m.buildClient = fake
+
+	cmd := m.handleNavKey(keyMsg("r"))
+	if cmd == nil {
+		t.Fatal("r key should return a refresh batch")
+	}
+	if m.buildGen != 1 {
+		t.Fatalf("buildGen = %d after manual refresh, want 1", m.buildGen)
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("refresh command returned %T, want tea.BatchMsg", msg)
+	}
+	if len(batch) == 0 {
+		t.Fatal("refresh batch is empty")
+	}
+	buildMsg := batch[len(batch)-1]()
+	if _, ok := buildMsg.(buildDataMsg); !ok || fake.listed != 1 {
+		t.Fatalf("manual refresh did not fetch Build: message=%T calls=%d", buildMsg, fake.listed)
+	}
 }
 
 // TestBuildUnavailableAtStartup proves a missing buildctl is nonfatal and
