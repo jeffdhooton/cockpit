@@ -70,7 +70,7 @@ func TestMergeNameCollision(t *testing.T) {
 	if !sawLegacy || !sawBuild {
 		t.Error("one of the colliding records was swallowed")
 	}
-	if keys["legacy:Fix admissions provenance"] != true || keys["build:conv-1"] != true {
+	if keys["legacy:Fix admissions provenance"] != true || keys["build:conv-1:run-conv-1"] != true {
 		t.Errorf("keys = %v, want source-scoped identities", keys)
 	}
 }

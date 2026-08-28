@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jhoot/cockpit/buildctl"
 	"github.com/jhoot/cockpit/sources"
@@ -28,9 +29,15 @@ type MergedSession struct {
 }
 
 // Key is the collision-proof identity used for status maps and comparisons.
+// The run id disambiguates a hostile/buggy producer that lists two records
+// with the same conversation id.
 func (s MergedSession) Key() string {
 	if s.Source == SourceBuild && s.Build != nil {
-		return "build:" + s.Build.ConversationID
+		run := "none"
+		if s.Build.RunID != nil && *s.Build.RunID != "" {
+			run = *s.Build.RunID
+		}
+		return "build:" + s.Build.ConversationID + ":" + run
 	}
 	if s.Legacy != nil {
 		return "legacy:" + s.Legacy.Name
@@ -54,16 +61,27 @@ func (s MergedSession) DisplayName() string {
 	return ""
 }
 
-// SanitizeDisplay strips ASCII control characters (including ESC, so no raw
-// ANSI sequences) from contract-supplied strings before rendering. Values
-// cross the contract as data; they must reach the terminal as data too.
+// maxDisplayLen bounds any contract-supplied string before rendering, so a
+// hostile or buggy producer cannot blow up the fixed panel layout.
+const maxDisplayLen = 120
+
+// SanitizeDisplay strips characters that must never reach the terminal from
+// contract-supplied strings and bounds their length: C0 controls (including
+// ESC, so no 7-bit ANSI), DEL, C1 controls (8-bit CSI/OSC/DCS), and Unicode
+// format characters (zero-width and bidi overrides used for spoofing).
+// Values cross the contract as data; they reach the terminal as data too.
 func SanitizeDisplay(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+	out := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || unicode.Is(unicode.Cf, r) {
 			return -1
 		}
 		return r
 	}, s)
+	runes := []rune(out)
+	if len(runes) > maxDisplayLen {
+		out = string(runes[:maxDisplayLen-1]) + "…"
+	}
+	return out
 }
 
 // Activity is the recency timestamp used for sorting.

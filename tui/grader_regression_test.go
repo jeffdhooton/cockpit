@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/jhoot/cockpit/buildctl"
 	"github.com/jhoot/cockpit/sources"
@@ -34,8 +35,8 @@ func TestSearchEnterSurvivesRefresh(t *testing.T) {
 	m.handleNavKey(keyMsg("/"))
 	m.searchInput.SetValue("alpha")
 	m.updateSearchResults()
-	if len(m.searchResults) != 1 || m.searchResults[0] != "build:conv-AAA" {
-		t.Fatalf("searchResults = %v, want [build:conv-AAA]", m.searchResults)
+	if len(m.searchResults) != 1 || m.searchResults[0] != "build:conv-AAA:run-conv-AAA" {
+		t.Fatalf("searchResults = %v, want [build:conv-AAA:run-conv-AAA]", m.searchResults)
 	}
 
 	// A refresh arrives while the dialog is open and re-sorts the list:
@@ -56,8 +57,8 @@ func TestSearchEnterSurvivesRefresh(t *testing.T) {
 	if len(fake.attached) != 1 || fake.attached[0] != "run-conv-AAA" {
 		t.Fatalf("attached = %v — Enter activated the wrong session after reorder", fake.attached)
 	}
-	if m.sessions.Sessions[m.sessions.Cursor].Key() != "build:conv-AAA" {
-		t.Errorf("cursor landed on %q, want build:conv-AAA", m.sessions.Sessions[m.sessions.Cursor].Key())
+	if m.sessions.Sessions[m.sessions.Cursor].Key() != "build:conv-AAA:run-conv-AAA" {
+		t.Errorf("cursor landed on %q, want build:conv-AAA:run-conv-AAA", m.sessions.Sessions[m.sessions.Cursor].Key())
 	}
 }
 
@@ -204,5 +205,153 @@ func TestStalePreviewClearedAfterDrop(t *testing.T) {
 	m = m2.(Model)
 	if m.sessionPreview != "" {
 		t.Errorf("stale preview survived record drop:\n%s", m.sessionPreview)
+	}
+}
+
+// TestSanitizeC1AndFormatChars: C1 controls (8-bit CSI/OSC/DCS) and Unicode
+// format characters (zero-width, bidi overrides) never survive sanitization
+// (grader round 3 regression — round 1/2 stripped only C0 and DEL).
+func TestSanitizeC1AndFormatChars(t *testing.T) {
+	payloads := map[string]string{
+		"OSC8 hyperlink": "click \u009d8;;https://evil.example\u009chere",
+		"8-bit CSI":      "x\u009b[31m",
+		"DCS":            "\u0090payload\u009c",
+		"bidi override":  "title\u202eTROJAN",
+		"zero width":     "ti\u200dtle",
+		"isolate":        "a\u2066b",
+	}
+	for name, in := range payloads {
+		got := SanitizeDisplay(in)
+		for _, r := range got {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || unicode.Is(unicode.Cf, r) {
+				t.Errorf("%s: SanitizeDisplay(%q) kept %U in %q", name, in, r, got)
+			}
+		}
+	}
+
+	// End-to-end through a rendered card view.
+	s := buildSession("conv-c1", "x\u009b[2J\u009d8;;https://evil\u009c", "idle", true, true, false, time.Now())
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+	m2, _ := m.Update(buildDataMsg{Sessions: []buildctl.Session{s}})
+	m = m2.(Model)
+	m.focused = PanelSessions
+	view := m.sessions.View(m.width, 4, true)
+	for _, r := range view {
+		if r >= 0x80 && r <= 0x9f {
+			t.Fatalf("card View contains C1 character %U", r)
+		}
+	}
+}
+
+// TestSanitizeBoundsLength: contract strings are length-bounded so a hostile
+// title cannot blow up the fixed panel layout.
+func TestSanitizeBoundsLength(t *testing.T) {
+	long := strings.Repeat("a", 200000)
+	got := SanitizeDisplay(long)
+	if len([]rune(got)) > maxDisplayLen {
+		t.Errorf("sanitized length = %d runes, want <= %d", len([]rune(got)), maxDisplayLen)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Error("truncated string should end with an ellipsis")
+	}
+
+	// A huge Build title must not overflow the rendered page height.
+	s := buildSession("conv-huge", long, "idle", true, true, false, time.Now())
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+	m2, _ := m.Update(buildDataMsg{Sessions: []buildctl.Session{s}})
+	m = m2.(Model)
+	m.focused = PanelSessions
+	m.refreshPreview()
+	view := m.View()
+	if lines := strings.Count(view, "\n") + 1; lines > m.height+10 {
+		t.Errorf("View rendered %d lines into height %d — layout blown", lines, m.height)
+	}
+}
+
+// TestLaunchDialogLateErrorNoPanic: a buildProjectsMsg arriving after the
+// user advanced steps must not panic rendering and must not let a stale
+// list re-point a pending launch (grader round 3 regression).
+func TestLaunchDialogLateErrorNoPanic(t *testing.T) {
+	m := newBuildTestModel(t)
+	fake := &fakeBuildClient{
+		projects: []buildctl.Project{{ID: "p1", Label: "one", HostKind: "local"}},
+	}
+	m.buildClient = fake
+
+	m.handleNavKey(keyMsg("L"))
+	m2, _ := m.Update(buildProjectsMsg{Projects: fake.projects})
+	m = m2.(Model)
+	m.handleBuildLaunchKey(keyMsg("enter")) // → step 1
+	m.handleBuildLaunchKey(keyMsg("enter")) // → step 2
+	m.handleBuildLaunchKey(keyMsg("enter")) // → step 3
+	if m.launchStep != 3 {
+		t.Fatalf("setup: step = %d, want 3", m.launchStep)
+	}
+
+	// Late failure (Build went down mid-dialog): must degrade, not panic.
+	m2, _ = m.Update(buildProjectsMsg{Err: buildctl.ErrUnavailable})
+	m = m2.(Model)
+	if m.launchStep != 0 {
+		t.Errorf("late error left dialog at step %d", m.launchStep)
+	}
+	_ = m.View() // must not panic
+
+	// Late success with a different list also resets to re-confirmation.
+	m2, _ = m.Update(buildProjectsMsg{Projects: fake.projects})
+	m = m2.(Model)
+	m.handleBuildLaunchKey(keyMsg("enter")) // → step 1
+	m2, _ = m.Update(buildProjectsMsg{Projects: []buildctl.Project{{ID: "p2", Label: "two", HostKind: "local"}}})
+	m = m2.(Model)
+	if m.launchStep != 0 {
+		t.Errorf("late list swap left dialog at step %d", m.launchStep)
+	}
+	if cmd := m.handleBuildLaunchKey(keyMsg("enter")); cmd != nil {
+		// Re-confirming at step 0 advances; submit must carry the CURRENT
+		// project, not the stale one.
+		m.handleBuildLaunchKey(keyMsg("enter"))
+		m.handleBuildLaunchKey(keyMsg("enter"))
+		cmd = m.handleBuildLaunchKey(keyMsg("enter"))
+		cmd()
+		if len(fake.launched) != 1 || fake.launched[0].ProjectID != "p2" {
+			t.Errorf("launched = %+v, want current project p2", fake.launched)
+		}
+	}
+}
+
+// TestDuplicateConversationIdentity: two Build records sharing a
+// conversation id (producer bug/hostility) get distinct identity keys when
+// their runs differ, so search cannot shadow one behind the other.
+func TestDuplicateConversationIdentity(t *testing.T) {
+	now := time.Now()
+	a := buildSession("conv-dup", "run A", "idle", true, true, false, now)
+	b := buildSession("conv-dup", "run B", "working", true, true, false, now.Add(time.Minute))
+	runB := "run-dup-b"
+	b.RunID = &runB
+
+	merged := MergeSessions(nil, []buildctl.Session{a, b})
+	if len(merged) != 2 {
+		t.Fatalf("got %d records, want 2", len(merged))
+	}
+	if merged[0].Key() == merged[1].Key() {
+		t.Errorf("duplicate identity key %q shadows a record", merged[0].Key())
+	}
+
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+	m2, _ := m.Update(buildDataMsg{Sessions: []buildctl.Session{a, b}})
+	m = m2.(Model)
+	m.handleNavKey(keyMsg("/"))
+	m.searchInput.SetValue("")
+	m.updateSearchResults()
+	if len(m.searchResults) != 2 || m.searchResults[0] == m.searchResults[1] {
+		t.Errorf("search results = %v, want two distinct identities", m.searchResults)
+	}
+	// Both records must resolve to their own list position.
+	idx0 := m.sessionIndexByKey(m.searchResults[0])
+	idx1 := m.sessionIndexByKey(m.searchResults[1])
+	if idx0 < 0 || idx1 < 0 || idx0 == idx1 {
+		t.Errorf("resolution = %d, %d — records not independently addressable", idx0, idx1)
 	}
 }

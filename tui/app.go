@@ -389,9 +389,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.launchErr = ""
 			m.launchProjects = msg.Projects
-			if m.launchCursor >= len(m.launchProjects) {
-				m.launchCursor = 0
-			}
+		}
+		// A project list arriving after the user advanced steps is a stale
+		// race (e.g. double-open): never let it shrink the slice out from
+		// under the dialog or re-point the cursor at another project.
+		// Drop back to project selection so every choice is re-confirmed
+		// against the list that is actually current.
+		if m.launchStep > 0 {
+			m.launchStep = 0
+			m.launchCursor = 0
+			m.launchInput.Blur()
+		}
+		if m.launchCursor >= len(m.launchProjects) {
+			m.launchCursor = 0
 		}
 
 	case buildActionResultMsg:
@@ -1707,12 +1717,19 @@ func (m *Model) renderBuildLaunchDialog() string {
 		dialogW = m.width - 4
 	}
 
+	// Defense in depth: rendering past step 0 requires a project list. A
+	// stale race must degrade the dialog, never panic the TUI.
+	step := m.launchStep
+	if len(m.launchProjects) == 0 || m.launchCursor >= len(m.launchProjects) {
+		step = 0
+	}
+
 	var lines []string
 	lines = append(lines, AccentText.Bold(true).Render("Launch Build Session"))
 	lines = append(lines, "")
 
 	// Step 0: project
-	if m.launchStep == 0 {
+	if step == 0 {
 		lines = append(lines, BoldText.Render("Project:"))
 		if m.launchLoading {
 			lines = append(lines, MutedText.Render("  ⠋ loading projects..."))
@@ -1734,25 +1751,25 @@ func (m *Model) renderBuildLaunchDialog() string {
 	}
 
 	// Step 1: agent
-	if m.launchStep == 1 {
+	if step == 1 {
 		lines = append(lines, "")
 		lines = append(lines, BoldText.Render("Agent:"))
 		lines = append(lines, "  "+choicePill("claude", m.launchAgent == 0)+"  "+choicePill("codex", m.launchAgent == 1))
-	} else if m.launchStep > 1 {
+	} else if step > 1 {
 		lines = append(lines, MutedText.Render("Agent: ")+[]string{"claude", "codex"}[m.launchAgent])
 	}
 
 	// Step 2: permission
-	if m.launchStep == 2 {
+	if step == 2 {
 		lines = append(lines, "")
 		lines = append(lines, BoldText.Render("Permission:"))
 		lines = append(lines, "  "+choicePill("standard", m.launchPermission == 0)+"  "+choicePill("dangerous", m.launchPermission == 1))
-	} else if m.launchStep > 2 {
+	} else if step > 2 {
 		lines = append(lines, MutedText.Render("Permission: ")+[]string{"standard", "dangerous"}[m.launchPermission])
 	}
 
 	// Step 3: prompt
-	if m.launchStep == 3 {
+	if step == 3 {
 		lines = append(lines, "")
 		lines = append(lines, BoldText.Render("Prompt (optional):"))
 		lines = append(lines, "> "+m.launchInput.View())
@@ -1764,7 +1781,7 @@ func (m *Model) renderBuildLaunchDialog() string {
 	}
 
 	lines = append(lines, "")
-	switch m.launchStep {
+	switch step {
 	case 0:
 		lines = append(lines, AccentText.Render("Enter")+" "+MutedText.Render("next")+"  "+AccentText.Render("Esc")+" "+MutedText.Render("cancel"))
 	case 1, 2:
