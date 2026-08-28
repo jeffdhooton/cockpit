@@ -37,11 +37,11 @@ const (
 	boidYStretch  = 2.0 // rows are ~2x taller than cols
 
 	// Predator dynamics.
-	predatorMaxSpeed  = 1.1
-	predatorVisionR   = 14.0
-	predatorPursueK   = 0.03
-	preyFleeVisionR   = 10.0
-	preyFleeK         = 0.35
+	predatorMaxSpeed = 1.1
+	predatorVisionR  = 14.0
+	predatorPursueK  = 0.03
+	preyFleeVisionR  = 10.0
+	preyFleeK        = 0.35
 )
 
 // Prey palette: deep indigo → pink (colorblind-safe, no green).

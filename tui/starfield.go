@@ -112,4 +112,3 @@ func (m *StarfieldModel) update() {
 		}
 	}
 }
-

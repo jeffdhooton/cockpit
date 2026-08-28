@@ -156,8 +156,8 @@ func RenderPanel(title string, content string, width int, height int, focused bo
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		Width(width - 2).
-		Height(height - 2).
+		Width(width-2).
+		Height(height-2).
 		Padding(0, 1)
 
 	return style.Render(titledContent)

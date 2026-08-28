@@ -33,7 +33,7 @@ type raindrop struct {
 }
 
 const (
-	rainSlopeX = 1.0 // rightward drift per tick (cells)
+	rainSlopeX   = 1.0 // rightward drift per tick (cells)
 	rainMinSpeed = 0.8
 	rainMaxSpeed = 1.8
 )

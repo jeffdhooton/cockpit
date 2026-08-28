@@ -184,4 +184,3 @@ func repoHash(label string, salt byte) uint32 {
 func inBounds(x, y, w, h int) bool {
 	return x >= 0 && x < w && y >= 0 && y < h
 }
-

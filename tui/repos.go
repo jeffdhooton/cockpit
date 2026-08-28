@@ -10,9 +10,9 @@ import (
 
 // ReposModel manages the repos panel.
 type ReposModel struct {
-	Repos    []sources.GitRepoStatus
-	Cursor   int
-	Loading  bool
+	Repos        []sources.GitRepoStatus
+	Cursor       int
+	Loading      bool
 	ScrollOffset int
 }
 
