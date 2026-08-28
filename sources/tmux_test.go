@@ -59,3 +59,16 @@ func TestParseTmuxOutputMalformed(t *testing.T) {
 		t.Errorf("got %d sessions, want 0 (malformed lines skipped)", len(sessions))
 	}
 }
+
+func TestParseTmuxOutputPreservesNeverAttachedSession(t *testing.T) {
+	sessions, err := parseTmuxOutput("never-attached\t1\t0\t\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(sessions))
+	}
+	if sessions[0].Name != "never-attached" {
+		t.Fatalf("name = %q, want never-attached", sessions[0].Name)
+	}
+}

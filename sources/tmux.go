@@ -14,7 +14,7 @@ func GetTmuxSessions(ctx context.Context) ([]TmuxSession, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F",
-		"#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_last_attached}")
+		"#{session_name}\t#{session_windows}\t#{session_attached}\t#{?session_last_attached,#{session_last_attached},#{session_created}}")
 	out, err := cmd.Output()
 	if err != nil {
 		// tmux server not running — not an error, just no sessions
@@ -25,15 +25,15 @@ func GetTmuxSessions(ctx context.Context) ([]TmuxSession, error) {
 
 // parseTmuxOutput parses the tab-delimited output of tmux list-sessions.
 func parseTmuxOutput(output string) ([]TmuxSession, error) {
-	output = strings.TrimSpace(output)
+	output = strings.TrimRight(output, "\r\n")
 	if output == "" {
 		return nil, nil
 	}
 
 	var sessions []TmuxSession
 	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		parts := strings.SplitN(line, "\t", 4)
@@ -41,9 +41,9 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 			continue
 		}
 
-		windows, _ := strconv.Atoi(parts[1])
-		attached := parts[2] == "1"
-		epoch, _ := strconv.ParseInt(parts[3], 10, 64)
+		windows, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+		attached := strings.TrimSpace(parts[2]) == "1"
+		epoch, _ := strconv.ParseInt(strings.TrimSpace(parts[3]), 10, 64)
 		lastUsed := time.Unix(epoch, 0)
 
 		sessions = append(sessions, TmuxSession{
