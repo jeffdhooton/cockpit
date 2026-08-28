@@ -217,9 +217,10 @@ type Model struct {
 	launchErr        string
 	launchInput      textinput.Model
 
-	// Session search (/ key)
+	// Session search (/ key): results hold MergedSession.Key() identities,
+	// never list positions, so refreshes cannot retarget a pending jump.
 	searchInput   textinput.Model
-	searchResults []int // indices into sessions.Sessions
+	searchResults []string
 	searchCursor  int
 
 	// Visualizer picker (V key)
@@ -1384,19 +1385,20 @@ func (m *Model) refreshPreview() tea.Cmd {
 }
 
 // buildPreviewText renders the contract-known facts about a Build session.
+// All interpolated values are contract data and are sanitized for display.
 func buildPreviewText(sel MergedSession) string {
 	b := sel.Build
 	lines := []string{
-		fmt.Sprintf("project: %s   agent: %s", b.ProjectLabel, b.Agent),
+		fmt.Sprintf("project: %s   agent: %s", SanitizeDisplay(b.ProjectLabel), SanitizeDisplay(b.Agent)),
 		fmt.Sprintf("status: %s · live=%t · attachable=%t · resumable=%t",
 			buildStatusLabel(b.Status), b.Live, b.Attachable, b.Resumable),
 	}
 	if b.RunID != nil {
-		lines = append(lines, "run: "+*b.RunID)
+		lines = append(lines, "run: "+SanitizeDisplay(*b.RunID))
 	} else {
 		lines = append(lines, "run: (none)")
 	}
-	lines = append(lines, "conversation: "+b.ConversationID)
+	lines = append(lines, "conversation: "+SanitizeDisplay(b.ConversationID))
 	if idle := formatIdleTime(b.UpdatedAt); idle != "" {
 		lines = append(lines, "updated: "+idle+" ago")
 	}
@@ -1411,9 +1413,18 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	case "enter":
 		if len(m.searchResults) > 0 {
-			idx := m.searchResults[m.searchCursor]
+			key := m.searchResults[m.searchCursor]
 			m.mode = ModeNavigation
 			m.searchInput.Blur()
+			// Results store identity keys, not positions: the merged list
+			// re-sorts on every refresh while the dialog is open, so an index
+			// could silently point at a different session by Enter time.
+			idx := m.sessionIndexByKey(key)
+			if idx < 0 {
+				m.transientErr = "⚠ session is no longer available"
+				m.transientTimer = 3
+				return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+			}
 			m.sessions.Cursor = idx
 			return m.activateSession(idx)
 		}
@@ -1500,11 +1511,22 @@ func (m *Model) updateSearchResults() {
 	m.searchResults = nil
 	m.searchCursor = 0
 
-	for i, s := range m.sessions.Sessions {
+	for _, s := range m.sessions.Sessions {
 		if query == "" || strings.Contains(strings.ToLower(s.DisplayName()), query) {
-			m.searchResults = append(m.searchResults, i)
+			m.searchResults = append(m.searchResults, s.Key())
 		}
 	}
+}
+
+// sessionIndexByKey resolves a stable identity key to the current list
+// position, or -1 when the session is gone.
+func (m Model) sessionIndexByKey(key string) int {
+	for i, s := range m.sessions.Sessions {
+		if s.Key() == key {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Model) renderSearchDialog() string {
@@ -1521,12 +1543,19 @@ func (m *Model) renderSearchDialog() string {
 	lines = append(lines, "")
 
 	maxVisible := 10
-	for vi, ri := range m.searchResults {
+	for vi, key := range m.searchResults {
 		if vi >= maxVisible {
 			lines = append(lines, MutedText.Render(fmt.Sprintf("  … %d more", len(m.searchResults)-maxVisible)))
 			break
 		}
 
+		ri := m.sessionIndexByKey(key)
+		if ri < 0 {
+			// Session vanished after the query ran — show it as gone rather
+			// than pointing at whatever now occupies its old position.
+			lines = append(lines, MutedText.Render("    ○ (session gone)"))
+			continue
+		}
 		s := m.sessions.Sessions[ri]
 
 		// Status indicator
@@ -1689,11 +1718,11 @@ func (m *Model) renderBuildLaunchDialog() string {
 				marker = "▸ "
 				style = style.Foreground(ColorAccent).Bold(true)
 			}
-			lines = append(lines, marker+style.Render(p.Label)+"  "+MutedText.Render(config.CollapseTilde(p.RootPath)))
+			lines = append(lines, marker+style.Render(SanitizeDisplay(p.Label))+"  "+MutedText.Render(config.CollapseTilde(SanitizeDisplay(p.RootPath))))
 		}
 	} else {
 		p := m.launchProjects[m.launchCursor]
-		lines = append(lines, MutedText.Render("Project: ")+p.Label)
+		lines = append(lines, MutedText.Render("Project: ")+SanitizeDisplay(p.Label))
 	}
 
 	// Step 1: agent

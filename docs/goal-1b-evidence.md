@@ -75,4 +75,22 @@ attach child.
 
 ## Grading record
 
-(Filled in as grading rounds complete — see below.)
+- **House-rules check (explore sub-agent, commit be53526):** no violations on any of the six
+  house rules. Six nits reported; all fixed in 1ccb780 (labelExists legacy-only compare,
+  cursor clamp, over-bound output classified malformed + pinned by test, launch prompt input
+  guard, doc comment placement).
+- **Grader round 1 (fresh-context coder sub-agent, commits be53526+1ccb780):** DISPROOF
+  SUCCEEDED with five defects. All fixed in the follow-up commit:
+  1. Search results pinned list positions; a refresh re-sorted them under an open dialog and
+     Enter could activate the wrong session (including a Build attach). Fixed: results store
+     identity keys resolved at Enter time; vanished sessions yield a hint.
+  2. `exec.Cmd.Wait` could block past the timeout when a grandchild held the pipes. Fixed:
+     `WaitDelay = 3s`, explicit `exec.ErrWaitDelay` classification, regression tests
+     (300s-grandchild case now returns in ~3.2s).
+  3. Empty-string `run_id` passed validation and presented as attachable. Fixed: rejected as
+     malformed in `validateSession`; `Attachable()` also requires a non-empty run id.
+  4. Raw ANSI/control sequences in contract strings reached the terminal. Fixed:
+     `SanitizeDisplay` strips control characters at every render boundary (titles, project
+     labels, preview, launch dialog).
+  5. Launch/resume response validation was laxer than list. Fixed: shared `validateSession`.
+- **Grader round 2:** (pending)

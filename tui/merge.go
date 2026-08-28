@@ -2,6 +2,7 @@ package tui
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jhoot/cockpit/buildctl"
@@ -38,18 +39,31 @@ func (s MergedSession) Key() string {
 }
 
 // DisplayName is the human label: Build's authoritative title for Build
-// sessions, the tmux session name for legacy ones.
+// sessions, the tmux session name for legacy ones. Contract-supplied strings
+// are sanitized before they reach the terminal.
 func (s MergedSession) DisplayName() string {
 	if s.Source == SourceBuild && s.Build != nil {
 		if s.Build.Title != "" {
-			return s.Build.Title
+			return SanitizeDisplay(s.Build.Title)
 		}
-		return s.Build.ConversationID
+		return SanitizeDisplay(s.Build.ConversationID)
 	}
 	if s.Legacy != nil {
 		return s.Legacy.Name
 	}
 	return ""
+}
+
+// SanitizeDisplay strips ASCII control characters (including ESC, so no raw
+// ANSI sequences) from contract-supplied strings before rendering. Values
+// cross the contract as data; they must reach the terminal as data too.
+func SanitizeDisplay(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Activity is the recency timestamp used for sorting.
@@ -64,10 +78,12 @@ func (s MergedSession) Activity() time.Time {
 }
 
 // Attachable reports only what the owning authority says: Build records use
-// the contract flag on a live run; legacy sessions are always switchable.
+// the contract flag on a live run with a concrete run id; legacy sessions
+// are always switchable.
 func (s MergedSession) Attachable() bool {
 	if s.Source == SourceBuild {
-		return s.Build != nil && s.Build.Attachable && s.Build.Live && s.Build.RunID != nil
+		return s.Build != nil && s.Build.Attachable && s.Build.Live &&
+			s.Build.RunID != nil && *s.Build.RunID != ""
 	}
 	return s.Legacy != nil
 }

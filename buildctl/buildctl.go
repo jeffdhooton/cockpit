@@ -32,6 +32,11 @@ const maxEnvelopeSize = 4 << 20
 // DefaultTimeout bounds non-interactive buildctl invocations.
 const DefaultTimeout = 10 * time.Second
 
+// waitDelay bounds how long cmd.Wait blocks on pipe EOF after the child
+// exits or is killed, so a grandchild inheriting the pipes cannot wedge the
+// client. Kept short: buildctl writes one bounded object and exits.
+const waitDelay = 3 * time.Second
+
 // Kind classifies a client failure so the TUI can degrade visibly without
 // parsing message strings.
 type Kind int
@@ -265,17 +270,29 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 		return nil, err
 	}
 	for i, s := range data.Sessions {
-		if s.ConversationID == "" {
-			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: empty conversation_id", i), ExitCode: 0}
-		}
-		if !validStatuses[s.Status] {
-			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: unknown status %q", i, s.Status), ExitCode: 0}
-		}
-		if s.UpdatedAt.IsZero() {
-			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: missing updated_at", i), ExitCode: 0}
+		if err := validateSession(s); err != nil {
+			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: %s", i, err), ExitCode: 0}
 		}
 	}
 	return data.Sessions, nil
+}
+
+// validateSession enforces the invariants Cockpit relies on, identically for
+// listed, launched, and resumed sessions.
+func validateSession(s Session) error {
+	if s.ConversationID == "" {
+		return fmt.Errorf("empty conversation_id")
+	}
+	if s.RunID != nil && *s.RunID == "" {
+		return fmt.Errorf("empty run_id")
+	}
+	if !validStatuses[s.Status] {
+		return fmt.Errorf("unknown status %q", s.Status)
+	}
+	if s.UpdatedAt.IsZero() {
+		return fmt.Errorf("missing updated_at")
+	}
+	return nil
 }
 
 // ListProjects runs `buildctl project list --json`.
@@ -325,8 +342,8 @@ func (c *Client) Launch(ctx context.Context, opts LaunchOptions) (Session, error
 	if err := c.runJSON(ctx, &s, args...); err != nil {
 		return Session{}, err
 	}
-	if s.ConversationID == "" {
-		return Session{}, &Error{Kind: KindMalformed, Message: "launch: response missing conversation_id", ExitCode: 0}
+	if err := validateSession(s); err != nil {
+		return Session{}, &Error{Kind: KindMalformed, Message: "launch: " + err.Error(), ExitCode: 0}
 	}
 	return s, nil
 }
@@ -353,8 +370,8 @@ func (c *Client) Resume(ctx context.Context, conversationID, permission string) 
 	if err != nil {
 		return Session{}, err
 	}
-	if s.ConversationID == "" {
-		return Session{}, &Error{Kind: KindMalformed, Message: "resume: response missing conversation_id", ExitCode: 0}
+	if err := validateSession(s); err != nil {
+		return Session{}, &Error{Kind: KindMalformed, Message: "resume: " + err.Error(), ExitCode: 0}
 	}
 	return s, nil
 }
@@ -435,6 +452,10 @@ func (c *Client) runJSON(ctx context.Context, dataOut any, args ...string) error
 func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte, exitCode int, err error) {
 	// #nosec G204 -- Command is a resolved executable path and args are data.
 	cmd := exec.CommandContext(ctx, c.Command, args...)
+	// WaitDelay bounds how long Wait blocks on pipe EOF after the process
+	// exits or is killed — a grandchild inheriting stdout/stderr must not
+	// wedge the client past its timeout.
+	cmd.WaitDelay = waitDelay
 
 	var outBuf, errBuf bytes.Buffer
 	outW := &boundedWriter{w: &outBuf, limit: maxEnvelopeSize}
@@ -463,6 +484,15 @@ func (c *Client) run(ctx context.Context, args ...string) (stdout, stderr []byte
 	}
 
 	if runErr != nil {
+		// The process exited but a descendant held the pipes past WaitDelay;
+		// any output we did capture is untrustworthy as a complete envelope.
+		if errors.Is(runErr, exec.ErrWaitDelay) {
+			return nil, nil, -1, &Error{
+				Kind:     KindMalformed,
+				Message:  "buildctl exited but left output pipes open",
+				ExitCode: -1,
+			}
+		}
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			// The process ran and failed; the envelope (if any) decides the kind.
