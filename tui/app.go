@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jhoot/cockpit/buildctl"
 	"github.com/jhoot/cockpit/config"
 	"github.com/jhoot/cockpit/sources"
 )
@@ -40,6 +42,7 @@ const (
 	ModeNewSession
 	ModeSearch
 	ModeVizPicker
+	ModeBuildLaunch
 )
 
 // Layout holds calculated panel dimensions.
@@ -156,6 +159,21 @@ func CalculateLayout(width, height, repoCount int) Layout {
 	return l
 }
 
+// BuildClient is the injectable boundary to Build's frozen buildctl
+// contract. The production implementation is *buildctl.Client; tests
+// substitute fakes. Cockpit never speaks to Build through any other route.
+type BuildClient interface {
+	ListSessions(ctx context.Context) ([]buildctl.Session, error)
+	ListProjects(ctx context.Context) ([]buildctl.Project, error)
+	Launch(ctx context.Context, opts buildctl.LaunchOptions) (buildctl.Session, error)
+	Resume(ctx context.Context, conversationID, permission string) (buildctl.Session, error)
+	AttachCommand(ctx context.Context, runID string) (*exec.Cmd, error)
+}
+
+// buildctlResolve is a seam for tests: production resolves the real
+// executable, tests substitute a stub so nothing touches the real Build home.
+var buildctlResolve = buildctl.ResolveCommand
+
 // Model is the root Bubbletea model.
 type Model struct {
 	config     *config.Config
@@ -166,14 +184,19 @@ type Model struct {
 	mode       Mode
 	layout     Layout
 
-	sessions       SessionsModel
-	repos          ReposModel
-	tasks          TasksModel
-	inbox          InboxModel
-	viz            VizModel
-	github         *sources.GitHubStatus
-	sessionPreview string
+	sessions           SessionsModel
+	repos              ReposModel
+	tasks              TasksModel
+	inbox              InboxModel
+	viz                VizModel
+	github             *sources.GitHubStatus
+	sessionPreview     string
 	lastPreviewSession string
+
+	// Build integration: raw source lists remerged into sessions.Sessions.
+	buildClient    BuildClient
+	legacySessions []sources.TmuxSession
+	buildSessions  []buildctl.Session
 
 	transientErr   string
 	transientTimer int
@@ -183,6 +206,16 @@ type Model struct {
 	newSessionStep  int    // 0=path, 1=label confirm
 	newSessionPath  string // expanded path from step 0
 	newSessionErr   string // inline validation error
+
+	// Build launch dialog state (L key)
+	launchStep       int // 0=project, 1=agent, 2=permission, 3=prompt
+	launchProjects   []buildctl.Project
+	launchCursor     int
+	launchAgent      int // 0=claude, 1=codex
+	launchPermission int // 0=standard, 1=dangerous
+	launchLoading    bool
+	launchErr        string
+	launchInput      textinput.Model
 
 	// Session search (/ key)
 	searchInput   textinput.Model
@@ -205,6 +238,11 @@ func NewModel(cfg *config.Config, configPath string) Model {
 	si.CharLimit = 128
 	si.Width = 40
 
+	pi := textinput.New()
+	pi.Placeholder = "optional opening prompt..."
+	pi.CharLimit = 512
+	pi.Width = 50
+
 	m := Model{
 		config:          cfg,
 		configPath:      configPath,
@@ -216,20 +254,66 @@ func NewModel(cfg *config.Config, configPath string) Model {
 		viz:             NewVizModel(),
 		newSessionInput: ti,
 		searchInput:     si,
+		launchInput:     pi,
 	}
+	m.buildClient, m.sessions.BuildNote = resolveBuildClient(cfg)
 	return m
+}
+
+// resolveBuildClient locates the buildctl executable. Failure is nonfatal:
+// the model runs legacy-only with a quiet, actionable indicator.
+func resolveBuildClient(cfg *config.Config) (BuildClient, string) {
+	path, err := buildctlResolve(cfg.Build.Command)
+	if err != nil {
+		return nil, "Build unavailable — legacy only (no buildctl; set [build].command)"
+	}
+	return &buildctl.Client{Command: path}, ""
+}
+
+// buildFailureNote renders a quiet, actionable indicator for a failed Build
+// fetch. Every failure class degrades to legacy-only and is nonfatal.
+func buildFailureNote(err error) string {
+	switch {
+	case errors.Is(err, buildctl.ErrUnavailable):
+		return "Build unavailable — legacy only (is Build running?)"
+	case errors.Is(err, buildctl.ErrTimeout):
+		return "Build timed out — legacy only"
+	case errors.Is(err, buildctl.ErrUnsupportedSchema), errors.Is(err, buildctl.ErrMalformed):
+		return "Build data rejected (incompatible buildctl) — legacy only"
+	default:
+		return "Build error — legacy only"
+	}
 }
 
 // Message types for source data
 type (
-	tmuxDataMsg    struct{ Sessions []sources.TmuxSession }
-	gitDataMsg     struct{ Repos []sources.GitRepoStatus }
-	tasksDataMsg   struct{ Tasks []sources.Task }
-	inboxDataMsg   struct{ Items []sources.Task }
-	githubDataMsg    struct{ Status *sources.GitHubStatus }
-	sourceErrMsg     struct{ Source string; Err error }
-	previewDataMsg      struct{ Content string; Session string }
-	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
+	tmuxDataMsg   struct{ Sessions []sources.TmuxSession }
+	gitDataMsg    struct{ Repos []sources.GitRepoStatus }
+	tasksDataMsg  struct{ Tasks []sources.Task }
+	inboxDataMsg  struct{ Items []sources.Task }
+	githubDataMsg struct{ Status *sources.GitHubStatus }
+	sourceErrMsg  struct {
+		Source string
+		Err    error
+	}
+	previewDataMsg struct {
+		Content string
+		Session string
+	}
+	sessionStatusMsg struct{ Snapshots map[string]string } // MergedSession.Key() → pane content
+	buildDataMsg     struct {
+		Sessions []buildctl.Session
+		Err      error
+	}
+	buildProjectsMsg struct {
+		Projects []buildctl.Project
+		Err      error
+	}
+	buildActionResultMsg struct {
+		Verb string
+		Err  error
+	}
+	attachResultMsg     struct{ Err error }
 	localTickMsg        struct{}
 	remoteTickMsg       struct{}
 	vizTickMsg          struct{}
@@ -244,6 +328,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchTasks(),
 		m.fetchInbox(),
 		m.fetchGitHub(),
+		m.fetchBuild(),
 		m.localTick(),
 		m.remoteTick(),
 		m.vizTick(),
@@ -274,18 +359,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				filtered = append(filtered, s)
 			}
 		}
-		m.sessions.Sessions = filtered
+		m.legacySessions = filtered
+		m.remerge()
 		m.sessions.Loading = false
 		// Fetch preview for currently selected session + status for all sessions
-		cmds = append(cmds, m.fetchPreview(), m.fetchSessionStatuses())
+		cmds = append(cmds, m.refreshPreview(), m.fetchSessionStatuses())
+
+	case buildDataMsg:
+		if msg.Err != nil {
+			// Every Build failure class degrades nonfatally to legacy-only.
+			// Stale Build records are dropped so stale actions are impossible.
+			m.buildSessions = nil
+			m.sessions.BuildNote = buildFailureNote(msg.Err)
+		} else {
+			m.buildSessions = msg.Sessions
+			m.sessions.BuildNote = ""
+		}
+		m.remerge()
+		m.sessions.Loading = false
+		cmds = append(cmds, m.refreshPreview())
+
+	case buildProjectsMsg:
+		m.launchLoading = false
+		if msg.Err != nil {
+			m.launchErr = "cannot list projects: " + msg.Err.Error()
+			m.launchProjects = nil
+		} else {
+			m.launchErr = ""
+			m.launchProjects = msg.Projects
+			if m.launchCursor >= len(m.launchProjects) {
+				m.launchCursor = 0
+			}
+		}
+
+	case buildActionResultMsg:
+		if msg.Err != nil {
+			m.transientErr = "⚠ " + msg.Verb + ": " + msg.Err.Error()
+			m.transientTimer = 3
+			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		} else {
+			m.transientErr = "✓ " + msg.Verb + " started"
+			m.transientTimer = 3
+			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		}
+		// Refresh after any action so availability flags stay contract-true.
+		cmds = append(cmds, m.fetchBuild())
+
+	case attachResultMsg:
+		// Bubble Tea has already restored the terminal around the child.
+		// A failed or detached attach must leave the TUI fully intact.
+		if msg.Err != nil {
+			m.transientErr = "⚠ attach: " + msg.Err.Error()
+			m.transientTimer = 3
+			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		}
+		cmds = append(cmds, m.fetchTmux(), m.fetchBuild())
 
 	case sessionStatusMsg:
-		for name, content := range msg.Snapshots {
-			m.sessions.UpdateStatus(name, content)
+		for key, content := range msg.Snapshots {
+			m.sessions.UpdateStatus(key, content)
 		}
 
 	case previewDataMsg:
-		if msg.Session == m.selectedSessionName() {
+		if msg.Session == m.selectedSessionKey() {
 			m.sessionPreview = msg.Content
 		}
 
@@ -360,6 +496,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchGit(),
 			m.fetchTasks(),
 			m.fetchInbox(),
+			m.fetchBuild(),
 			m.localTick(),
 		)
 
@@ -421,6 +558,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Forward messages to the launch prompt input on the final step — skip
+	// the key that entered the mode
+	if modeBefore == ModeBuildLaunch && m.launchStep == 3 {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			var cmd tea.Cmd
+			m.launchInput, cmd = m.launchInput.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -434,6 +583,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleSearchKey(msg)
 	case ModeVizPicker:
 		return m.handleVizPickerKey(msg)
+	case ModeBuildLaunch:
+		return m.handleBuildLaunchKey(msg)
 	default:
 		return m.handleNavKey(msg)
 	}
@@ -448,12 +599,12 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 	case "j":
 		m.cursorDown()
 		if m.focused == PanelSessions {
-			return m.fetchPreview()
+			return m.refreshPreview()
 		}
 	case "k":
 		m.cursorUp()
 		if m.focused == PanelSessions {
-			return m.fetchPreview()
+			return m.refreshPreview()
 		}
 	case "q":
 		return tea.Quit
@@ -500,6 +651,22 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 		m.newSessionInput.Placeholder = "~/workspace/my-project"
 		m.newSessionInput.Focus()
 		return nil
+	case "L":
+		if m.buildClient == nil {
+			m.transientErr = "⚠ Build unavailable — cannot launch (no buildctl)"
+			m.transientTimer = 3
+			return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+		}
+		m.mode = ModeBuildLaunch
+		m.launchStep = 0
+		m.launchCursor = 0
+		m.launchAgent = 0
+		m.launchPermission = 0
+		m.launchErr = ""
+		m.launchLoading = true
+		m.launchProjects = nil
+		m.launchInput.SetValue("")
+		return m.fetchBuildProjects()
 	case "c":
 		m.mode = ModeCapture
 		m.focused = PanelToday
@@ -686,7 +853,7 @@ func (m *Model) labelExists(label string) bool {
 		}
 	}
 	for _, s := range m.sessions.Sessions {
-		if s.Name == label {
+		if s.DisplayName() == label {
 			return true
 		}
 	}
@@ -695,7 +862,13 @@ func (m *Model) labelExists(label string) bool {
 
 func (m *Model) saveSessionAsRepo() tea.Cmd {
 	session := m.sessions.Sessions[m.sessions.Cursor]
-	label := session.Name
+	if session.Source != SourceLegacy || session.Legacy == nil {
+		// Build sessions are owned by Build; there is no tmux cwd to capture.
+		m.transientErr = "⚠ Build sessions are managed by Build — nothing to save"
+		m.transientTimer = 3
+		return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	label := session.Legacy.Name
 
 	configPath := m.configPath
 	return func() tea.Msg {
@@ -737,11 +910,7 @@ func (m *Model) handleEnter() tea.Cmd {
 	switch m.focused {
 	case PanelSessions:
 		if len(m.sessions.Sessions) > 0 {
-			name := m.sessions.Sessions[m.sessions.Cursor].Name
-			return func() tea.Msg {
-				err := tmuxSwitch(name)
-				return tmuxSwitchResultMsg{Err: err}
-			}
+			return m.activateSession(m.sessions.Cursor)
 		}
 	case PanelRepos:
 		if len(m.repos.Repos) > 0 {
@@ -753,6 +922,69 @@ func (m *Model) handleEnter() tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// activateSession performs the primary action on a merged session row.
+// Legacy sessions switch on the default tmux server exactly as before.
+// Build sessions act only on contract flags: attach when attachable, resume
+// when resumable, otherwise a visible hint. Nothing is inferred from tmux
+// or process state.
+func (m *Model) activateSession(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.sessions.Sessions) {
+		return nil
+	}
+	sel := m.sessions.Sessions[idx]
+
+	if sel.Source == SourceLegacy {
+		if sel.Legacy == nil {
+			return nil
+		}
+		name := sel.Legacy.Name
+		return func() tea.Msg {
+			err := tmuxSwitch(name)
+			return tmuxSwitchResultMsg{Err: err}
+		}
+	}
+
+	if sel.Build == nil || m.buildClient == nil {
+		return nil
+	}
+
+	switch {
+	case sel.Attachable():
+		return m.attachBuild(*sel.Build.RunID)
+	case sel.Resumable():
+		return m.resumeBuild(sel.Build.ConversationID)
+	default:
+		m.transientErr = fmt.Sprintf("⚠ %q is not attachable or resumable (status: %s)",
+			sel.DisplayName(), buildStatusLabel(sel.Build.Status))
+		m.transientTimer = 3
+		return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+}
+
+// attachBuild runs the interactive `buildctl session attach` child with the
+// Bubble Tea terminal suspended around it. ExecProcess releases the
+// terminal before spawning and restores it after the child exits — on
+// success, on detach, and on child failure alike.
+func (m *Model) attachBuild(runID string) tea.Cmd {
+	cmd, err := m.buildClient.AttachCommand(context.Background(), runID)
+	if err != nil {
+		return func() tea.Msg { return attachResultMsg{Err: err} }
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return attachResultMsg{Err: err}
+	})
+}
+
+// resumeBuild runs `buildctl session resume` for a conversation the contract
+// says is resumable, then refreshes.
+func (m *Model) resumeBuild(conversationID string) tea.Cmd {
+	client := m.buildClient
+	return func() tea.Msg {
+		_, err := client.Resume(context.Background(), conversationID, "standard")
+		return buildActionResultMsg{Verb: "resume", Err: err}
+	}
 }
 
 func (m *Model) cursorUp() {
@@ -780,7 +1012,6 @@ func (m *Model) cursorDown() {
 		m.inbox.CursorDown()
 	}
 }
-
 
 func (m Model) View() string {
 	if m.width < 60 {
@@ -856,7 +1087,7 @@ func (m Model) View() string {
 	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, vizPanel)
 
 	// Key hints
-	keyhints := KeyhintsView(m.mode, m.focused, m.width)
+	keyhints := KeyhintsView(m.mode, m.focused, m.width, m.buildClient != nil)
 	if m.transientErr != "" {
 		keyhints = WarningText.Render(m.transientErr)
 	}
@@ -892,17 +1123,39 @@ func (m Model) View() string {
 			lipgloss.WithWhitespaceForeground(ColorBg))
 	}
 
+	// Overlay Build launch dialog
+	if m.mode == ModeBuildLaunch {
+		dialog := m.renderBuildLaunchDialog()
+		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
+			lipgloss.WithWhitespaceChars(" "),
+			lipgloss.WithWhitespaceForeground(ColorBg))
+	}
+
 	return page
 }
 
 // renderPreviewHeader renders the toolbar above the session preview: a muted
 // breadcrumb on the left, a status dot on the right, with a rule between them.
 func (m Model) renderPreviewHeader(width int) string {
-	name := m.selectedSessionName()
-	crumb := Breadcrumb("local", name)
+	sel, ok := m.selectedSession()
+	if !ok {
+		return ""
+	}
+
+	crumbSource := "local"
+	if sel.Source == SourceBuild {
+		crumbSource = "build"
+	}
+	crumb := Breadcrumb(crumbSource, sel.DisplayName())
 
 	status := ""
-	if st, ok := m.sessions.Statuses[name]; ok {
+	if sel.Source == SourceBuild && sel.Build != nil {
+		variant := VariantMuted
+		if sel.Build.Live {
+			variant = VariantAccent
+		}
+		status = StatusDot(buildStatusLabel(sel.Build.Status), variant)
+	} else if st, ok := m.sessions.Statuses[sel.Key()]; ok {
 		switch st {
 		case sources.ClaudeStatusIdle:
 			status = StatusDot("Idle", VariantMuted)
@@ -1037,18 +1290,79 @@ func (m Model) vizTick() tea.Cmd {
 	return tea.Tick(time.Second/16, func(time.Time) tea.Msg { return vizTickMsg{} })
 }
 
-func (m Model) selectedSessionName() string {
-	if len(m.sessions.Sessions) == 0 {
-		return ""
+// remerge rebuilds the unified session list from both sources and keeps the
+// cursor in range.
+func (m *Model) remerge() {
+	m.sessions.Sessions = MergeSessions(m.legacySessions, m.buildSessions)
+	if m.sessions.Cursor >= len(m.sessions.Sessions) && m.sessions.Cursor > 0 {
+		m.sessions.Cursor = len(m.sessions.Sessions) - 1
 	}
-	return m.sessions.Sessions[m.sessions.Cursor].Name
 }
 
-func (m Model) fetchPreview() tea.Cmd {
-	name := m.selectedSessionName()
-	if name == "" {
+// fetchBuild polls the Build session list through the buildctl contract.
+// When no client is resolved it is a no-op; the unavailable indicator was
+// already set at startup.
+func (m Model) fetchBuild() tea.Cmd {
+	client := m.buildClient
+	if client == nil {
 		return nil
 	}
+	return func() tea.Msg {
+		sessions, err := client.ListSessions(context.Background())
+		return buildDataMsg{Sessions: sessions, Err: err}
+	}
+}
+
+// fetchBuildProjects lists launchable projects: non-archived local projects
+// only, per the contract's Goal 1 scoping.
+func (m Model) fetchBuildProjects() tea.Cmd {
+	client := m.buildClient
+	if client == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		projects, err := client.ListProjects(context.Background())
+		if err != nil {
+			return buildProjectsMsg{Err: err}
+		}
+		var local []buildctl.Project
+		for _, p := range projects {
+			if !p.Archived && p.HostKind == "local" {
+				local = append(local, p)
+			}
+		}
+		return buildProjectsMsg{Projects: local}
+	}
+}
+
+func (m Model) selectedSession() (MergedSession, bool) {
+	if len(m.sessions.Sessions) == 0 || m.sessions.Cursor >= len(m.sessions.Sessions) {
+		return MergedSession{}, false
+	}
+	return m.sessions.Sessions[m.sessions.Cursor], true
+}
+
+func (m Model) selectedSessionKey() string {
+	if sel, ok := m.selectedSession(); ok {
+		return sel.Key()
+	}
+	return ""
+}
+
+// refreshPreview updates the preview pane for the current selection. Legacy
+// sessions show captured pane content; Build sessions show contract data
+// only — Cockpit never scrapes Build's private tmux server.
+func (m *Model) refreshPreview() tea.Cmd {
+	sel, ok := m.selectedSession()
+	if !ok {
+		return nil
+	}
+	if sel.Source == SourceBuild {
+		m.sessionPreview = buildPreviewText(sel)
+		return nil
+	}
+	name := sel.Legacy.Name
+	key := sel.Key()
 	maxLines := m.layout.SessionsH - 6 // cards take ~4 rows, leave rest for preview
 	if maxLines < 3 {
 		maxLines = 3
@@ -1056,10 +1370,30 @@ func (m Model) fetchPreview() tea.Cmd {
 	return func() tea.Msg {
 		content, err := sources.CapturePane(context.Background(), name, maxLines)
 		if err != nil {
-			return previewDataMsg{Content: MutedText.Render("(no preview available)"), Session: name}
+			return previewDataMsg{Content: MutedText.Render("(no preview available)"), Session: key}
 		}
-		return previewDataMsg{Content: content, Session: name}
+		return previewDataMsg{Content: content, Session: key}
 	}
+}
+
+// buildPreviewText renders the contract-known facts about a Build session.
+func buildPreviewText(sel MergedSession) string {
+	b := sel.Build
+	lines := []string{
+		fmt.Sprintf("project: %s   agent: %s", b.ProjectLabel, b.Agent),
+		fmt.Sprintf("status: %s · live=%t · attachable=%t · resumable=%t",
+			buildStatusLabel(b.Status), b.Live, b.Attachable, b.Resumable),
+	}
+	if b.RunID != nil {
+		lines = append(lines, "run: "+*b.RunID)
+	} else {
+		lines = append(lines, "run: (none)")
+	}
+	lines = append(lines, "conversation: "+b.ConversationID)
+	if idle := formatIdleTime(b.UpdatedAt); idle != "" {
+		lines = append(lines, "updated: "+idle+" ago")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
@@ -1071,13 +1405,10 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		if len(m.searchResults) > 0 {
 			idx := m.searchResults[m.searchCursor]
-			name := m.sessions.Sessions[idx].Name
 			m.mode = ModeNavigation
 			m.searchInput.Blur()
-			return func() tea.Msg {
-				err := tmuxSwitch(name)
-				return tmuxSwitchResultMsg{Err: err}
-			}
+			m.sessions.Cursor = idx
+			return m.activateSession(idx)
 		}
 		return nil
 	case "up", "ctrl+k":
@@ -1163,7 +1494,7 @@ func (m *Model) updateSearchResults() {
 	m.searchCursor = 0
 
 	for i, s := range m.sessions.Sessions {
-		if query == "" || strings.Contains(strings.ToLower(s.Name), query) {
+		if query == "" || strings.Contains(strings.ToLower(s.DisplayName()), query) {
 			m.searchResults = append(m.searchResults, i)
 		}
 	}
@@ -1193,7 +1524,13 @@ func (m *Model) renderSearchDialog() string {
 
 		// Status indicator
 		statusDot := MutedText.Render("○")
-		if st, ok := m.sessions.Statuses[s.Name]; ok {
+		if s.Source == SourceBuild && s.Build != nil {
+			if s.Build.Live {
+				statusDot = SuccessText.Render("●")
+			} else {
+				statusDot = ErrorText.Render("●")
+			}
+		} else if st, ok := m.sessions.Statuses[s.Key()]; ok {
 			switch st {
 			case sources.ClaudeStatusIdle:
 				statusDot = ErrorText.Render("●")
@@ -1202,9 +1539,12 @@ func (m *Model) renderSearchDialog() string {
 			}
 		}
 
-		name := s.Name
+		name := s.DisplayName()
+		if s.Source == SourceBuild {
+			name = "⚡ " + name
+		}
 		if vi == m.searchCursor {
-			name = AccentText.Bold(true).Render(s.Name)
+			name = AccentText.Bold(true).Render(name)
 			lines = append(lines, fmt.Sprintf("  ▸ %s %s", statusDot, name))
 		} else {
 			lines = append(lines, fmt.Sprintf("    %s %s", statusDot, name))
@@ -1229,17 +1569,208 @@ func (m *Model) renderSearchDialog() string {
 	return style.Render(content)
 }
 
+// fetchSessionStatuses polls pane content for legacy sessions only. Build
+// session status comes from the contract — never from pane scraping.
+// handleBuildLaunchKey drives the multi-step Build launch dialog:
+// project → agent → permission → optional prompt.
+func (m *Model) handleBuildLaunchKey(msg tea.KeyMsg) tea.Cmd {
+	if msg.String() == "esc" {
+		if m.launchStep > 0 {
+			m.launchStep--
+			m.launchErr = ""
+			m.launchInput.Blur()
+			return nil
+		}
+		m.mode = ModeNavigation
+		m.launchInput.Blur()
+		return nil
+	}
+
+	switch m.launchStep {
+	case 0: // project
+		switch msg.String() {
+		case "up", "k":
+			if m.launchCursor > 0 {
+				m.launchCursor--
+			}
+		case "down", "j":
+			if m.launchCursor < len(m.launchProjects)-1 {
+				m.launchCursor++
+			}
+		case "enter":
+			if m.launchLoading {
+				return nil
+			}
+			if len(m.launchProjects) == 0 {
+				m.launchErr = "no local Build projects to launch into"
+				return nil
+			}
+			m.launchErr = ""
+			m.launchStep = 1
+		}
+	case 1: // agent
+		switch msg.String() {
+		case "left", "h", "right", "l", "tab":
+			m.launchAgent = 1 - m.launchAgent
+		case "enter":
+			m.launchStep = 2
+		}
+	case 2: // permission — dangerous only when explicitly chosen
+		switch msg.String() {
+		case "left", "h", "right", "l", "tab":
+			m.launchPermission = 1 - m.launchPermission
+		case "enter":
+			m.launchStep = 3
+			m.launchInput.Focus()
+		}
+	case 3: // optional prompt; empty means no prompt
+		if msg.String() == "enter" {
+			return m.submitBuildLaunch()
+		}
+	}
+	return nil
+}
+
+// submitBuildLaunch validates the dialog state and launches through the
+// contract, then returns to navigation and refreshes.
+func (m *Model) submitBuildLaunch() tea.Cmd {
+	if m.buildClient == nil || len(m.launchProjects) == 0 || m.launchCursor >= len(m.launchProjects) {
+		m.mode = ModeNavigation
+		m.launchInput.Blur()
+		return nil
+	}
+	project := m.launchProjects[m.launchCursor]
+	agent := []string{"claude", "codex"}[m.launchAgent]
+	perm := []string{"standard", "dangerous"}[m.launchPermission]
+	prompt := strings.TrimSpace(m.launchInput.Value())
+	client := m.buildClient
+
+	m.mode = ModeNavigation
+	m.launchInput.Blur()
+
+	return func() tea.Msg {
+		_, err := client.Launch(context.Background(), buildctl.LaunchOptions{
+			ProjectID:  project.ID,
+			Agent:      agent,
+			Permission: perm,
+			Prompt:     prompt,
+		})
+		return buildActionResultMsg{Verb: "launch", Err: err}
+	}
+}
+
+func (m *Model) renderBuildLaunchDialog() string {
+	dialogW := 64
+	if m.width < 68 {
+		dialogW = m.width - 4
+	}
+
+	var lines []string
+	lines = append(lines, AccentText.Bold(true).Render("Launch Build Session"))
+	lines = append(lines, "")
+
+	// Step 0: project
+	if m.launchStep == 0 {
+		lines = append(lines, BoldText.Render("Project:"))
+		if m.launchLoading {
+			lines = append(lines, MutedText.Render("  ⠋ loading projects..."))
+		} else if len(m.launchProjects) == 0 && m.launchErr == "" {
+			lines = append(lines, MutedText.Render("  (no local projects)"))
+		}
+		for i, p := range m.launchProjects {
+			marker := "  "
+			style := lipgloss.NewStyle().Foreground(ColorFg)
+			if i == m.launchCursor {
+				marker = "▸ "
+				style = style.Foreground(ColorAccent).Bold(true)
+			}
+			lines = append(lines, marker+style.Render(p.Label)+"  "+MutedText.Render(config.CollapseTilde(p.RootPath)))
+		}
+	} else {
+		p := m.launchProjects[m.launchCursor]
+		lines = append(lines, MutedText.Render("Project: ")+p.Label)
+	}
+
+	// Step 1: agent
+	if m.launchStep == 1 {
+		lines = append(lines, "")
+		lines = append(lines, BoldText.Render("Agent:"))
+		lines = append(lines, "  "+choicePill("claude", m.launchAgent == 0)+"  "+choicePill("codex", m.launchAgent == 1))
+	} else if m.launchStep > 1 {
+		lines = append(lines, MutedText.Render("Agent: ")+[]string{"claude", "codex"}[m.launchAgent])
+	}
+
+	// Step 2: permission
+	if m.launchStep == 2 {
+		lines = append(lines, "")
+		lines = append(lines, BoldText.Render("Permission:"))
+		lines = append(lines, "  "+choicePill("standard", m.launchPermission == 0)+"  "+choicePill("dangerous", m.launchPermission == 1))
+	} else if m.launchStep > 2 {
+		lines = append(lines, MutedText.Render("Permission: ")+[]string{"standard", "dangerous"}[m.launchPermission])
+	}
+
+	// Step 3: prompt
+	if m.launchStep == 3 {
+		lines = append(lines, "")
+		lines = append(lines, BoldText.Render("Prompt (optional):"))
+		lines = append(lines, "> "+m.launchInput.View())
+	}
+
+	if m.launchErr != "" {
+		lines = append(lines, "")
+		lines = append(lines, ErrorText.Render("  "+m.launchErr))
+	}
+
+	lines = append(lines, "")
+	switch m.launchStep {
+	case 0:
+		lines = append(lines, AccentText.Render("Enter")+" "+MutedText.Render("next")+"  "+AccentText.Render("Esc")+" "+MutedText.Render("cancel"))
+	case 1, 2:
+		lines = append(lines, AccentText.Render("←→")+" "+MutedText.Render("choose")+"  "+AccentText.Render("Enter")+" "+MutedText.Render("next")+"  "+AccentText.Render("Esc")+" "+MutedText.Render("back"))
+	default:
+		lines = append(lines, AccentText.Render("Enter")+" "+MutedText.Render("launch")+"  "+AccentText.Render("Esc")+" "+MutedText.Render("back"))
+	}
+
+	content := strings.Join(lines, "\n")
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorAccent).
+		Padding(1, 2).
+		Width(dialogW)
+
+	return style.Render(content)
+}
+
+// choicePill renders one selectable option in a choice row.
+func choicePill(label string, selected bool) string {
+	if selected {
+		return lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorAccent).
+			Bold(true).
+			Padding(0, 1).
+			Render(label)
+	}
+	return MutedText.Render(" " + label + " ")
+}
+
 func (m Model) fetchSessionStatuses() tea.Cmd {
-	sessions := m.sessions.Sessions
+	var legacy []sources.TmuxSession
+	for _, s := range m.sessions.Sessions {
+		if s.Source == SourceLegacy && s.Legacy != nil {
+			legacy = append(legacy, *s.Legacy)
+		}
+	}
 	return func() tea.Msg {
 		ctx := context.Background()
-		snapshots := make(map[string]string, len(sessions))
-		for _, s := range sessions {
+		snapshots := make(map[string]string, len(legacy))
+		for _, s := range legacy {
 			content, err := sources.CapturePaneContent(ctx, s.Name)
 			if err != nil {
 				continue
 			}
-			snapshots[s.Name] = content
+			snapshots["legacy:"+s.Name] = content
 		}
 		return sessionStatusMsg{Snapshots: snapshots}
 	}

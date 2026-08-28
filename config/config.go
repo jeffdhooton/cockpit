@@ -16,6 +16,13 @@ type Config struct {
 	Repos    []RepoConfig   `toml:"repos"`
 	GitHub   GitHubConfig   `toml:"github"`
 	Signals  SignalsConfig  `toml:"signals"`
+	Build    BuildConfig    `toml:"build"`
+}
+
+// BuildConfig points Cockpit at the buildctl executable. Empty Command uses
+// the contract resolution order: PATH, then ~/.build/bin/buildctl.
+type BuildConfig struct {
+	Command string `toml:"command"`
 }
 
 type GeneralConfig struct {

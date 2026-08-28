@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "future_top_level_field": {"nested": [1, 2, 3]},
+  "data": {
+    "sessions": [
+      {
+        "conversation_id": "conversation-uuid",
+        "run_id": "run-uuid",
+        "project_id": "project-uuid",
+        "project_label": "program-health",
+        "title": "Fix admissions provenance",
+        "agent": "codex",
+        "host_id": "host-uuid",
+        "host_label": "Local",
+        "host_kind": "local",
+        "status": "working",
+        "live": true,
+        "attachable": true,
+        "resumable": false,
+        "updated_at": "2026-08-27T21:00:00.000Z",
+        "future_session_field": "ignore me",
+        "remote_capabilities": {"ssh": true}
+      }
+    ],
+    "future_list_field": 42
+  }
+}

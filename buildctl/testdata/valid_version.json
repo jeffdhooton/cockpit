@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "cli_version": "0.1.0",
+    "supported_schema_versions": [1],
+    "server_available": true
+  }
+}

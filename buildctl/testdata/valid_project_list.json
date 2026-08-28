@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "projects": [
+      {
+        "id": "project-uuid",
+        "label": "program-health",
+        "root_path": "/Users/jeff/workspace/program-health",
+        "host_id": "host-uuid",
+        "host_label": "Local",
+        "host_kind": "local",
+        "archived": false
+      },
+      {
+        "id": "project-uuid-archived",
+        "label": "old-project",
+        "root_path": "/Users/jeff/workspace/old-project",
+        "host_id": "host-uuid",
+        "host_label": "Local",
+        "host_kind": "local",
+        "archived": true
+      }
+    ]
+  }
+}

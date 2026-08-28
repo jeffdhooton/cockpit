@@ -41,4 +41,10 @@ show_stale_sessions = true
 show_unpushed = true
 # Show repos with failing CI in signals panel
 show_failing_ci = true
+
+# [build]
+# Path to the buildctl executable (Build session control contract v1).
+# When unset, cockpit tries buildctl on PATH, then ~/.build/bin/buildctl.
+# Build is optional: without it, cockpit shows legacy tmux sessions only.
+# command = "~/.build/bin/buildctl"
 `

@@ -3,7 +3,7 @@ package tui
 import "strings"
 
 // KeyhintsView renders the context-sensitive bottom key bar.
-func KeyhintsView(mode Mode, focused PanelID, width int) string {
+func KeyhintsView(mode Mode, focused PanelID, width int, buildAvailable bool) string {
 	type hint struct {
 		key  string
 		desc string
@@ -28,16 +28,25 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 			{"Enter", "select"},
 			{"Esc", "cancel"},
 		}
+	case ModeBuildLaunch:
+		hints = []hint{
+			{"Enter", "next/launch"},
+			{"←→", "choose"},
+			{"Esc", "back/cancel"},
+		}
 	default: // ModeNavigation
 		hints = []hint{
 			{"Tab", "panels"},
 			{"j/k", "nav"},
-			{"Enter", "jump"},
+			{"Enter", "jump/attach"},
 			{"x", "toggle"},
 			{"c", "cap"},
 			{"n", "new"},
 			{"v", "viz"},
 			{"V", "pick"},
+		}
+		if buildAvailable {
+			hints = append(hints, hint{"L", "launch"})
 		}
 		if focused == PanelSessions {
 			hints = append(hints, hint{"s", "save"})

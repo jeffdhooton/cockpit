@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "conversation_id": "conversation-new",
+    "run_id": "run-new",
+    "project_id": "project-uuid",
+    "project_label": "program-health",
+    "title": "Investigate the failing test",
+    "agent": "codex",
+    "host_id": "host-uuid",
+    "host_label": "Local",
+    "host_kind": "local",
+    "status": "starting",
+    "live": true,
+    "attachable": true,
+    "resumable": false,
+    "updated_at": "2026-08-27T22:00:00.000Z"
+  }
+}

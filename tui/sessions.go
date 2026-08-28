@@ -10,18 +10,23 @@ import (
 	"github.com/jhoot/cockpit/sources"
 )
 
-// SessionsModel manages the sessions panel.
+// SessionsModel manages the sessions panel: a merged, identity-preserving
+// view of Build sessions (via the buildctl contract) and legacy tmux
+// sessions on the default server.
 type SessionsModel struct {
-	Sessions   []sources.TmuxSession
+	Sessions   []MergedSession
 	Cursor     int
 	Loading    bool
-	Statuses   map[string]sources.ClaudeStatus // session name → detected status
-	prevHashes map[string]string               // session name → previous content hash
+	Statuses   map[string]sources.ClaudeStatus // MergedSession.Key() → detected status (legacy only)
+	BuildNote  string                          // quiet Build availability indicator; empty when healthy
+	prevHashes map[string]string               // MergedSession.Key() → previous content hash
 }
 
 // UpdateStatus compares current pane content against the previous snapshot.
 // If the content changed, the session is working. If unchanged, it's idle.
-func (m *SessionsModel) UpdateStatus(name, content string) {
+// Only legacy sessions are polled this way — Build status comes from the
+// contract, never from pane scraping.
+func (m *SessionsModel) UpdateStatus(key, content string) {
 	if m.Statuses == nil {
 		m.Statuses = make(map[string]sources.ClaudeStatus)
 	}
@@ -30,19 +35,19 @@ func (m *SessionsModel) UpdateStatus(name, content string) {
 	}
 
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-	prev, seen := m.prevHashes[name]
-	m.prevHashes[name] = hash
+	prev, seen := m.prevHashes[key]
+	m.prevHashes[key] = hash
 
 	if !seen {
 		// First poll — can't determine yet
-		m.Statuses[name] = sources.ClaudeStatusUnknown
+		m.Statuses[key] = sources.ClaudeStatusUnknown
 		return
 	}
 
 	if hash == prev {
-		m.Statuses[name] = sources.ClaudeStatusIdle
+		m.Statuses[key] = sources.ClaudeStatusIdle
 	} else {
-		m.Statuses[name] = sources.ClaudeStatusWorking
+		m.Statuses[key] = sources.ClaudeStatusWorking
 	}
 }
 
@@ -62,13 +67,81 @@ func (m *SessionsModel) CursorDown() {
 	}
 }
 
+// statusLine renders the status portion of a session row.
+func (m SessionsModel) statusLine(s MergedSession) string {
+	if s.Source == SourceBuild && s.Build != nil {
+		label := buildStatusLabel(s.Build.Status)
+		variant := VariantMuted
+		if s.Build.Live {
+			variant = VariantAccent
+		}
+		return StatusDot(label, variant)
+	}
+	statusText := StatusDot("Detached", VariantMuted)
+	if s.Legacy != nil && s.Legacy.Attached {
+		statusText = StatusDot("Attached", VariantAccent)
+	}
+	if st, ok := m.Statuses[s.Key()]; ok {
+		switch st {
+		case sources.ClaudeStatusIdle:
+			statusText = StatusDot("Idle", VariantMuted)
+		case sources.ClaudeStatusWorking:
+			statusText = StatusDot("Working", VariantAccent)
+		}
+	}
+	return statusText
+}
+
+// infoLine renders secondary metadata for a session row.
+func (m SessionsModel) infoLine(s MergedSession) string {
+	if s.Source == SourceBuild && s.Build != nil {
+		parts := []string{s.Build.ProjectLabel, s.Build.Agent}
+		if idle := formatIdleTime(s.Build.UpdatedAt); idle != "" {
+			parts = append(parts, idle)
+		}
+		return MutedText.Render(strings.Join(parts, " · "))
+	}
+	info := ""
+	if s.Legacy != nil {
+		info = MutedText.Render(fmt.Sprintf("%dw", s.Legacy.Windows))
+		if idle := formatIdleTime(s.Legacy.LastUsed); idle != "" {
+			info += MutedText.Render(" · " + idle)
+		}
+	}
+	return info
+}
+
+// buildStatusLabel maps contract status values to display labels.
+func buildStatusLabel(status string) string {
+	switch status {
+	case "needs_input":
+		return "Needs input"
+	case "starting":
+		return "Starting"
+	case "working":
+		return "Working"
+	case "idle":
+		return "Idle"
+	case "exited":
+		return "Exited"
+	case "disconnected":
+		return "Disconnected"
+	default:
+		return status
+	}
+}
+
 func (m SessionsModel) View(width, height int, focused bool) string {
 	if m.Loading {
 		return MutedText.Render("⠋ Loading sessions...")
 	}
 	if len(m.Sessions) == 0 {
-		return MutedText.Render("No tmux sessions running. Start one: ") +
+		empty := MutedText.Render("No tmux sessions running. Start one: ") +
 			AccentText.Render("tmux new -s <name>")
+		if m.BuildNote != "" {
+			empty += "\n" + MutedText.Render(m.BuildNote)
+		}
+		return empty
 	}
 
 	// Render session cards horizontally
@@ -80,35 +153,23 @@ func (m SessionsModel) View(width, height int, focused bool) string {
 
 	// Join cards horizontally with gap
 	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+	if m.BuildNote != "" {
+		row += "\n" + MutedText.Render(m.BuildNote)
+	}
 
 	// If too wide, just truncate visually — lipgloss handles this
 	return row
 }
 
-func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
+func (m SessionsModel) renderCard(s MergedSession, selected bool) string {
 	nameStyle := BoldText
 	if selected {
 		nameStyle = nameStyle.Foreground(ColorAccent)
 	}
 
-	// Claude Code status indicator (from content-hash diffing)
-	statusText := StatusDot("Detached", VariantMuted)
-	if s.Attached {
-		statusText = StatusDot("Attached", VariantAccent)
-	}
-	if st, ok := m.Statuses[s.Name]; ok {
-		switch st {
-		case sources.ClaudeStatusIdle:
-			statusText = StatusDot("Idle", VariantMuted)
-		case sources.ClaudeStatusWorking:
-			statusText = StatusDot("Working", VariantAccent)
-		}
-	}
-
-	idle := formatIdleTime(s.LastUsed)
-	info := MutedText.Render(fmt.Sprintf("%dw", s.Windows))
-	if idle != "" {
-		info += MutedText.Render(" · " + idle)
+	name := s.DisplayName()
+	if s.Source == SourceBuild {
+		name = "⚡ " + name
 	}
 
 	// Chrome stays subtle — only the selected card lifts to the accent border.
@@ -124,8 +185,8 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
 		Padding(0, 1).
 		MarginRight(1)
 
-	content := nameStyle.Render(s.Name) + "\n" +
-		statusText + " " + info
+	content := nameStyle.Render(name) + "\n" +
+		m.statusLine(s) + " " + m.infoLine(s)
 
 	return style.Render(content)
 }
@@ -152,6 +213,9 @@ func (m SessionsModel) CompactView(width int, focused bool) string {
 		return MutedText.Render("⠋ Loading...")
 	}
 	if len(m.Sessions) == 0 {
+		if m.BuildNote != "" {
+			return MutedText.Render("No sessions · " + m.BuildNote)
+		}
 		return MutedText.Render("No sessions")
 	}
 
@@ -163,22 +227,24 @@ func (m SessionsModel) CompactView(width int, focused bool) string {
 			nameStyle = nameStyle.Foreground(ColorAccent)
 		}
 
-		status := StatusDot("Detached", VariantMuted)
-		if s.Attached {
-			status = StatusDot("Attached", VariantAccent)
-		}
-		if st, ok := m.Statuses[s.Name]; ok {
-			switch st {
-			case sources.ClaudeStatusIdle:
-				status = StatusDot("Idle", VariantMuted)
-			case sources.ClaudeStatusWorking:
-				status = StatusDot("Working", VariantAccent)
-			}
+		name := s.DisplayName()
+		if s.Source == SourceBuild {
+			name = "⚡ " + name
 		}
 
-		line := RowCursor(selected) + nameStyle.Render(s.Name) + "  " +
-			status + MutedText.Render(fmt.Sprintf("  %dw", s.Windows))
+		info := ""
+		if s.Source == SourceLegacy && s.Legacy != nil {
+			info = MutedText.Render(fmt.Sprintf("  %dw", s.Legacy.Windows))
+		} else if s.Source == SourceBuild && s.Build != nil {
+			info = MutedText.Render("  " + s.Build.ProjectLabel)
+		}
+
+		line := RowCursor(selected) + nameStyle.Render(name) + "  " +
+			m.statusLine(s) + info
 		lines = append(lines, line)
+	}
+	if m.BuildNote != "" {
+		lines = append(lines, MutedText.Render(m.BuildNote))
 	}
 	return strings.Join(lines, "\n")
 }

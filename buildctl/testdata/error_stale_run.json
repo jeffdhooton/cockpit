@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "ok": false,
+  "error": {
+    "code": "stale_run",
+    "message": "Run run-uuid is no longer active.",
+    "retryable": false
+  }
+}

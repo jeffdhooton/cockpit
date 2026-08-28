@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "data": {
+    "sessions": [
+      {
+        "conversation_id": "conversation-uuid",
+        "run_id": "run-uuid",
+        "project_id": "project-uuid",
+        "project_label": "program-health",
+        "title": "Fix admissions provenance",
+        "agent": "codex",
+        "host_id": "host-uuid",
+        "host_label": "Local",
+        "host_kind": "local",
+        "status": "idle",
+        "live": true,
+        "attachable": true,
+        "resumable": false,
+        "updated_at": "2026-08-27T21:00:00.000Z"
+      },
+      {
+        "conversation_id": "conversation-uuid-2",
+        "run_id": null,
+        "project_id": "project-uuid",
+        "project_label": "program-health",
+        "title": "Triage HL7 feed",
+        "agent": "claude",
+        "host_id": "host-uuid",
+        "host_label": "Local",
+        "host_kind": "local",
+        "status": "exited",
+        "live": false,
+        "attachable": false,
+        "resumable": true,
+        "updated_at": "2026-08-27T19:30:00.000Z"
+      }
+    ]
+  }
+}
