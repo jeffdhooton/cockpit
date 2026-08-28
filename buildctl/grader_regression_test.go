@@ -88,3 +88,18 @@ func TestWaitDelayWithoutTimeout(t *testing.T) {
 		t.Fatalf("error = %v, want nil or ErrMalformed", err)
 	}
 }
+
+// TestOkTrueWithErrorObject: a contradictory envelope (ok=true carrying an
+// error object) is rejected as a whole.
+func TestOkTrueWithErrorObject(t *testing.T) {
+	body := `printf '{"schema_version":1,"ok":true,"error":{"code":"internal_error","message":"x","retryable":false},"data":{"sessions":[]}}'`
+	cmd, _ := writeFake(t, body)
+	c := &Client{Command: cmd}
+	sessions, err := c.ListSessions(context.Background())
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("error = %v, want ErrMalformed for ok=true with error object", err)
+	}
+	if sessions != nil {
+		t.Errorf("partial data leaked: %+v", sessions)
+	}
+}

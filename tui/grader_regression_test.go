@@ -132,3 +132,77 @@ func TestContractStringsSanitized(t *testing.T) {
 		t.Error("clear-screen sequence from contract title reached View output")
 	}
 }
+
+// TestSanitizeProjectLabelAndAgent: control sequences in project_label or
+// agent never reach the card or compact views (grader round 2 regression —
+// round 1 fixed the title but missed these render boundaries).
+func TestSanitizeProjectLabelAndAgent(t *testing.T) {
+	s := buildSession("conv-ansi2", "clean title", "idle", true, true, false, time.Now())
+	s.ProjectLabel = "proj\x1b[2J\x1b[H"
+	s.Agent = "codex\x1b[31m"
+
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+	m2, _ := m.Update(buildDataMsg{Sessions: []buildctl.Session{s}})
+	m = m2.(Model)
+	m.focused = PanelSessions
+
+	if view := m.sessions.View(m.width, 4, true); strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b[31m") {
+		t.Error("card View leaked control sequences from project_label/agent")
+	}
+	if view := m.sessions.CompactView(70, true); strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b[31m") {
+		t.Error("CompactView leaked control sequences from project_label/agent")
+	}
+}
+
+// TestContractErrorMessageSanitized: error.message from a contract failure
+// envelope is sanitized before it reaches transientErr / launchErr.
+func TestContractErrorMessageSanitized(t *testing.T) {
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+
+	evilErr := &buildctl.Error{
+		Kind:    buildctl.KindNotFound,
+		Code:    "stale_run",
+		Message: "stale\x1b[2J\x1b[H run",
+	}
+
+	m2, _ := m.Update(buildActionResultMsg{Verb: "resume", Err: evilErr})
+	m = m2.(Model)
+	if strings.Contains(m.transientErr, "\x1b") {
+		t.Errorf("transientErr = %q, control sequences leaked", m.transientErr)
+	}
+	if !strings.Contains(m.transientErr, "stale") {
+		t.Errorf("transientErr = %q, sanitized message lost its content", m.transientErr)
+	}
+
+	m2, _ = m.Update(buildProjectsMsg{Err: evilErr})
+	m = m2.(Model)
+	if strings.Contains(m.launchErr, "\x1b") {
+		t.Errorf("launchErr = %q, control sequences leaked", m.launchErr)
+	}
+}
+
+// TestStalePreviewClearedAfterDrop: when a failed Build refresh drops the
+// records, the preview of the vanished session is cleared too — stale
+// contract state is never presented as current.
+func TestStalePreviewClearedAfterDrop(t *testing.T) {
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+
+	m2, _ := m.Update(buildDataMsg{Sessions: []buildctl.Session{
+		buildSession("conv-gone", "vanishing", "idle", true, true, false, time.Now()),
+	}})
+	m = m2.(Model)
+	m.focused = PanelSessions
+	m.refreshPreview()
+	if m.sessionPreview == "" {
+		t.Fatal("setup: expected a Build preview")
+	}
+
+	m2, _ = m.Update(buildDataMsg{Err: buildctl.ErrUnavailable})
+	m = m2.(Model)
+	if m.sessionPreview != "" {
+		t.Errorf("stale preview survived record drop:\n%s", m.sessionPreview)
+	}
+}

@@ -429,6 +429,11 @@ func (c *Client) runJSON(ctx context.Context, dataOut any, args ...string) error
 		}
 	}
 
+	// ok=true carrying an error object is contradictory: reject as a whole.
+	if env.Error != nil {
+		return &Error{Kind: KindMalformed, Message: "success envelope carries an error object", ExitCode: exitCode}
+	}
+
 	// ok=true with a non-zero process exit is inconsistent: reject.
 	if exitCode != 0 {
 		return &Error{

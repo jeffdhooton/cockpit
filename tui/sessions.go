@@ -92,10 +92,11 @@ func (m SessionsModel) statusLine(s MergedSession) string {
 	return statusText
 }
 
-// infoLine renders secondary metadata for a session row.
+// infoLine renders secondary metadata for a session row. Contract strings
+// are sanitized before they reach the terminal.
 func (m SessionsModel) infoLine(s MergedSession) string {
 	if s.Source == SourceBuild && s.Build != nil {
-		parts := []string{s.Build.ProjectLabel, s.Build.Agent}
+		parts := []string{SanitizeDisplay(s.Build.ProjectLabel), SanitizeDisplay(s.Build.Agent)}
 		if idle := formatIdleTime(s.Build.UpdatedAt); idle != "" {
 			parts = append(parts, idle)
 		}
@@ -236,7 +237,7 @@ func (m SessionsModel) CompactView(width int, focused bool) string {
 		if s.Source == SourceLegacy && s.Legacy != nil {
 			info = MutedText.Render(fmt.Sprintf("  %dw", s.Legacy.Windows))
 		} else if s.Source == SourceBuild && s.Build != nil {
-			info = MutedText.Render("  " + s.Build.ProjectLabel)
+			info = MutedText.Render("  " + SanitizeDisplay(s.Build.ProjectLabel))
 		}
 
 		line := RowCursor(selected) + nameStyle.Render(name) + "  " +

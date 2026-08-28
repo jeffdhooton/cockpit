@@ -384,7 +384,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case buildProjectsMsg:
 		m.launchLoading = false
 		if msg.Err != nil {
-			m.launchErr = "cannot list projects: " + msg.Err.Error()
+			m.launchErr = "cannot list projects: " + SanitizeDisplay(msg.Err.Error())
 			m.launchProjects = nil
 		} else {
 			m.launchErr = ""
@@ -396,7 +396,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case buildActionResultMsg:
 		if msg.Err != nil {
-			m.transientErr = "⚠ " + msg.Verb + ": " + msg.Err.Error()
+			m.transientErr = "⚠ " + msg.Verb + ": " + SanitizeDisplay(msg.Err.Error())
 			m.transientTimer = 3
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
 		} else {
@@ -411,7 +411,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Bubble Tea has already restored the terminal around the child.
 		// A failed or detached attach must leave the TUI fully intact.
 		if msg.Err != nil {
-			m.transientErr = "⚠ attach: " + msg.Err.Error()
+			m.transientErr = "⚠ attach: " + SanitizeDisplay(msg.Err.Error())
 			m.transientTimer = 3
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
 		}
@@ -1359,11 +1359,19 @@ func (m Model) selectedSessionKey() string {
 
 // refreshPreview updates the preview pane for the current selection. Legacy
 // sessions show captured pane content; Build sessions show contract data
-// only — Cockpit never scrapes Build's private tmux server.
+// only — Cockpit never scrapes Build's private tmux server. When the
+// selection vanishes or changes identity, the old preview is dropped
+// immediately so stale contract state is never presented as current.
 func (m *Model) refreshPreview() tea.Cmd {
 	sel, ok := m.selectedSession()
 	if !ok {
+		m.sessionPreview = ""
+		m.lastPreviewSession = ""
 		return nil
+	}
+	if key := sel.Key(); key != m.lastPreviewSession {
+		m.sessionPreview = ""
+		m.lastPreviewSession = key
 	}
 	if sel.Source == SourceBuild {
 		m.sessionPreview = buildPreviewText(sel)
