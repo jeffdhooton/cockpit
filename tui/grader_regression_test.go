@@ -355,3 +355,59 @@ func TestDuplicateConversationIdentity(t *testing.T) {
 		t.Errorf("resolution = %d, %d — records not independently addressable", idx0, idx1)
 	}
 }
+
+// TestOutOfOrderFetchIgnored: fetches overlap (5s tick vs 10s timeout), so a
+// stale in-flight result must never undo a newer one. Only the latest
+// generation applies (grader round 4).
+func TestOutOfOrderFetchIgnored(t *testing.T) {
+	m := newBuildTestModel(t)
+	m.buildClient = &fakeBuildClient{}
+	m.focused = PanelSessions
+
+	live := []buildctl.Session{
+		buildSession("conv-live", "live work", "idle", true, true, false, time.Now()),
+	}
+
+	// Generation 0 (initial fetch) succeeds.
+	m2, _ := m.Update(buildDataMsg{Gen: 0, Sessions: live})
+	m = m2.(Model)
+	if len(m.buildSessions) != 1 {
+		t.Fatalf("setup: initial fetch not applied")
+	}
+
+	// A tick issues generation 1; its result is a failure — records drop.
+	m2, _ = m.Update(localTickMsg{})
+	m = m2.(Model)
+	if m.buildGen != 1 {
+		t.Fatalf("setup: buildGen = %d after tick, want 1", m.buildGen)
+	}
+	m2, _ = m.Update(buildDataMsg{Gen: 1, Err: buildctl.ErrUnavailable})
+	m = m2.(Model)
+	if len(m.buildSessions) != 0 || m.sessions.BuildNote == "" {
+		t.Fatalf("setup: failure not applied: sessions=%v note=%q", m.buildSessions, m.sessions.BuildNote)
+	}
+
+	// The stale generation-0 success now arrives late: it must be ignored,
+	// not resurrect the records or clear the failure note.
+	m2, _ = m.Update(buildDataMsg{Gen: 0, Sessions: live})
+	m = m2.(Model)
+	if len(m.buildSessions) != 0 {
+		t.Fatal("stale in-flight fetch resurrected dropped Build records")
+	}
+	if m.sessions.BuildNote == "" {
+		t.Error("stale fetch cleared the Build-unavailable indicator")
+	}
+	for _, s := range m.sessions.Sessions {
+		if s.Source == SourceBuild {
+			t.Errorf("stale Build record is back in the merged list: %+v", s)
+		}
+	}
+
+	// The current generation's later success applies normally and heals.
+	m2, _ = m.Update(buildDataMsg{Gen: 1, Sessions: live})
+	m = m2.(Model)
+	if len(m.buildSessions) != 1 || m.sessions.BuildNote != "" {
+		t.Errorf("current-generation fetch did not apply: sessions=%v note=%q",
+			m.buildSessions, m.sessions.BuildNote)
+	}
+}

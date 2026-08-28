@@ -103,3 +103,63 @@ func TestOkTrueWithErrorObject(t *testing.T) {
 		t.Errorf("partial data leaked: %+v", sessions)
 	}
 }
+
+// TestResumeIdentityMismatch: a resume success whose conversation_id
+// contradicts the request is rejected as a whole (grader round 4).
+func TestResumeIdentityMismatch(t *testing.T) {
+	// launch_response.json carries conversation_id "conversation-new".
+	cmd, _ := writeFake(t, serveFixture(t, "launch_response.json"))
+	c := &Client{Command: cmd}
+	_, err := c.Resume(context.Background(), "someone-else", "standard")
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("error = %v, want ErrMalformed for identity mismatch", err)
+	}
+}
+
+// TestLaunchProjectMismatch: a launch success whose project_id contradicts
+// the request is rejected as a whole (grader round 4).
+func TestLaunchProjectMismatch(t *testing.T) {
+	cmd, _ := writeFake(t, serveFixture(t, "launch_response.json"))
+	c := &Client{Command: cmd}
+	_, err := c.Launch(context.Background(), LaunchOptions{ProjectID: "different-project", Agent: "codex"})
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("error = %v, want ErrMalformed for project mismatch", err)
+	}
+}
+
+// TestDuplicateConversationRunRejected: two rows with the same
+// (conversation_id, run_id) are a contradictory listing — reject as a whole.
+// The same conversation under two different runs is legitimate (resume
+// produces a new run) and must pass.
+func TestDuplicateConversationRunRejected(t *testing.T) {
+	row := func(run string) string {
+		runJSON := "null"
+		if run != "" {
+			runJSON = `"` + run + `"`
+		}
+		return `{"conversation_id":"c","run_id":` + runJSON + `,"project_id":"p","project_label":"l","title":"t","agent":"codex","host_id":"h","host_label":"L","host_kind":"local","status":"idle","live":true,"attachable":true,"resumable":false,"updated_at":"2026-08-27T21:00:00Z"}`
+	}
+
+	dup := `printf '{"schema_version":1,"ok":true,"data":{"sessions":[` + row("run-1") + `,` + row("run-1") + `]}}'`
+	cmd, _ := writeFake(t, dup)
+	c := &Client{Command: cmd}
+	sessions, err := c.ListSessions(context.Background())
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("duplicate (conv,run): error = %v, want ErrMalformed", err)
+	}
+	if sessions != nil {
+		t.Errorf("partial data leaked: %+v", sessions)
+	}
+
+	// Same conversation, different runs: valid.
+	ok := `printf '{"schema_version":1,"ok":true,"data":{"sessions":[` + row("run-1") + `,` + row("run-2") + `]}}'`
+	cmd2, _ := writeFake(t, ok)
+	c2 := &Client{Command: cmd2}
+	sessions, err = c2.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("same conversation across runs must be accepted: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("got %d sessions, want 2", len(sessions))
+	}
+}

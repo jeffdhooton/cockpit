@@ -194,9 +194,12 @@ type Model struct {
 	lastPreviewSession string
 
 	// Build integration: raw source lists remerged into sessions.Sessions.
+	// buildGen sequences fetches: only the latest issued fetch may apply its
+	// result, so a stale in-flight success cannot undo a newer failure.
 	buildClient    BuildClient
 	legacySessions []sources.TmuxSession
 	buildSessions  []buildctl.Session
+	buildGen       int
 
 	transientErr   string
 	transientTimer int
@@ -303,6 +306,7 @@ type (
 	}
 	sessionStatusMsg struct{ Snapshots map[string]string } // MergedSession.Key() → pane content
 	buildDataMsg     struct {
+		Gen      int
 		Sessions []buildctl.Session
 		Err      error
 	}
@@ -368,6 +372,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.refreshPreview(), m.fetchSessionStatuses())
 
 	case buildDataMsg:
+		if msg.Gen != m.buildGen {
+			// Stale in-flight fetch: a newer fetch owns Build state. Ignoring
+			// this result is what keeps a late success from resurrecting
+			// records a newer failure already dropped.
+			break
+		}
 		if msg.Err != nil {
 			// Every Build failure class degrades nonfatally to legacy-only.
 			// Stale Build records are dropped so stale actions are impossible.
@@ -415,6 +425,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
 		}
 		// Refresh after any action so availability flags stay contract-true.
+		m.buildGen++
 		cmds = append(cmds, m.fetchBuild())
 
 	case attachResultMsg:
@@ -425,7 +436,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.transientTimer = 3
 			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
 		}
-		cmds = append(cmds, m.fetchTmux(), m.fetchBuild())
+		cmds = append(cmds, m.fetchTmux())
+		m.buildGen++
+		cmds = append(cmds, m.fetchBuild())
 
 	case sessionStatusMsg:
 		for key, content := range msg.Snapshots {
@@ -503,6 +516,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case localTickMsg:
+		m.buildGen++
 		cmds = append(cmds,
 			m.fetchTmux(),
 			m.fetchGit(),
@@ -1319,15 +1333,18 @@ func (m *Model) remerge() {
 
 // fetchBuild polls the Build session list through the buildctl contract.
 // When no client is resolved it is a no-op; the unavailable indicator was
-// already set at startup.
+// already set at startup. The result is stamped with the current fetch
+// generation; callers inside Update must increment m.buildGen first so the
+// newest fetch owns Build state.
 func (m Model) fetchBuild() tea.Cmd {
 	client := m.buildClient
 	if client == nil {
 		return nil
 	}
+	gen := m.buildGen
 	return func() tea.Msg {
 		sessions, err := client.ListSessions(context.Background())
-		return buildDataMsg{Sessions: sessions, Err: err}
+		return buildDataMsg{Gen: gen, Sessions: sessions, Err: err}
 	}
 }
 

@@ -274,6 +274,20 @@ func (c *Client) ListSessions(ctx context.Context) ([]Session, error) {
 			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: %s", i, err), ExitCode: 0}
 		}
 	}
+	// Duplicate (conversation, run) pairs are contradictory identities:
+	// reject the whole response rather than guess which record is real.
+	seen := make(map[string]bool, len(data.Sessions))
+	for i, s := range data.Sessions {
+		run := ""
+		if s.RunID != nil {
+			run = *s.RunID
+		}
+		k := s.ConversationID + "\x00" + run
+		if seen[k] {
+			return nil, &Error{Kind: KindMalformed, Message: fmt.Sprintf("session %d: duplicate conversation/run identity", i), ExitCode: 0}
+		}
+		seen[k] = true
+	}
 	return data.Sessions, nil
 }
 
@@ -345,6 +359,10 @@ func (c *Client) Launch(ctx context.Context, opts LaunchOptions) (Session, error
 	if err := validateSession(s); err != nil {
 		return Session{}, &Error{Kind: KindMalformed, Message: "launch: " + err.Error(), ExitCode: 0}
 	}
+	// A success response that contradicts the request is rejected as a whole.
+	if s.ProjectID != opts.ProjectID {
+		return Session{}, &Error{Kind: KindMalformed, Message: "launch: response project_id does not match the request", ExitCode: 0}
+	}
 	return s, nil
 }
 
@@ -372,6 +390,10 @@ func (c *Client) Resume(ctx context.Context, conversationID, permission string) 
 	}
 	if err := validateSession(s); err != nil {
 		return Session{}, &Error{Kind: KindMalformed, Message: "resume: " + err.Error(), ExitCode: 0}
+	}
+	// A success response that contradicts the request is rejected as a whole.
+	if s.ConversationID != conversationID {
+		return Session{}, &Error{Kind: KindMalformed, Message: "resume: response conversation_id does not match the request", ExitCode: 0}
 	}
 	return s, nil
 }

@@ -323,8 +323,8 @@ func TestLaunchArgvConstruction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	if s.ConversationID != "conversation-new" {
-		t.Errorf("conversation = %q, want conversation-new", s.ConversationID)
+	if s.ConversationID != "conversation-new" || s.ProjectID != "project-uuid" {
+		t.Errorf("session = %+v, want conversation-new in project-uuid", s)
 	}
 
 	argv := readArgv(t, dir)[0]
@@ -350,7 +350,7 @@ func TestLaunchDefaultsAndValidation(t *testing.T) {
 	cmd, dir := writeFake(t, serveFixture(t, "launch_response.json"))
 	c := &Client{Command: cmd}
 
-	if _, err := c.Launch(context.Background(), LaunchOptions{ProjectID: "p", Agent: "claude"}); err != nil {
+	if _, err := c.Launch(context.Background(), LaunchOptions{ProjectID: "project-uuid", Agent: "claude"}); err != nil {
 		t.Fatalf("Launch with defaults: %v", err)
 	}
 	argv := readArgv(t, dir)[0]
@@ -377,11 +377,11 @@ func TestLaunchDefaultsAndValidation(t *testing.T) {
 func TestResumeArgvConstruction(t *testing.T) {
 	cmd, dir := writeFake(t, serveFixture(t, "launch_response.json"))
 	c := &Client{Command: cmd}
-	if _, err := c.Resume(context.Background(), "conversation-uuid-2", ""); err != nil {
+	if _, err := c.Resume(context.Background(), "conversation-new", ""); err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	argv := readArgv(t, dir)[0]
-	want := []string{"session", "resume", "--conversation-id", "conversation-uuid-2", "--permission", "standard", "--json"}
+	want := []string{"session", "resume", "--conversation-id", "conversation-new", "--permission", "standard", "--json"}
 	if strings.Join(argv, "\x1f") != strings.Join(want, "\x1f") {
 		t.Errorf("argv = %q, want %q", argv, want)
 	}
