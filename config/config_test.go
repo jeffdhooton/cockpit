@@ -141,3 +141,33 @@ stale_session_threshold = "notaduration"
 		t.Errorf("error = %q, want to contain 'stale_session_threshold is invalid'", err.Error())
 	}
 }
+
+func TestDefaultViewDefaultsToGrid(t *testing.T) {
+	cfg := &Config{}
+	applyDefaults(cfg)
+	if cfg.General.DefaultView != "grid" {
+		t.Errorf("DefaultView = %q, want %q", cfg.General.DefaultView, "grid")
+	}
+}
+
+func TestDefaultViewRejectsUnknownValue(t *testing.T) {
+	cfg := &Config{
+		General:  GeneralConfig{RefreshInterval: 5, DefaultView: "gird"},
+		Obsidian: ObsidianConfig{VaultPath: "/tmp/vault"},
+		Signals:  SignalsConfig{StaleSessionThreshold: "24h"},
+	}
+	if err := validate(cfg); err == nil {
+		t.Error("validate should reject an unknown default_view (a silent typo is worse than an error)")
+	}
+}
+
+func TestDefaultViewAcceptsDashboard(t *testing.T) {
+	cfg := &Config{
+		General:  GeneralConfig{RefreshInterval: 5, DefaultView: "dashboard"},
+		Obsidian: ObsidianConfig{VaultPath: "/tmp/vault"},
+		Signals:  SignalsConfig{StaleSessionThreshold: "24h"},
+	}
+	if err := validate(cfg); err != nil {
+		t.Errorf("validate rejected dashboard: %v", err)
+	}
+}

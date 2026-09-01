@@ -8,6 +8,8 @@ const configTemplate = `# Cockpit — tmux-native Terminal Command Center
 session_name = "cockpit"
 # How often to refresh local sources (tmux, git, obsidian) in seconds
 refresh_interval = 5
+# Startup view: "grid" (sessions + repos as one grid) or "dashboard" (all panels)
+default_view = "grid"
 
 [obsidian]
 # Path to your Obsidian vault root

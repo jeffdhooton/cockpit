@@ -21,6 +21,7 @@ type Config struct {
 type GeneralConfig struct {
 	SessionName     string `toml:"session_name"`
 	RefreshInterval int    `toml:"refresh_interval"`
+	DefaultView     string `toml:"default_view"` // "grid" (default) or "dashboard"
 }
 
 type ObsidianConfig struct {
@@ -83,6 +84,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.General.RefreshInterval == 0 {
 		cfg.General.RefreshInterval = 5
 	}
+	if cfg.General.DefaultView == "" {
+		cfg.General.DefaultView = "grid"
+	}
 	if cfg.GitHub.RefreshInterval == 0 {
 		cfg.GitHub.RefreshInterval = 60
 	}
@@ -113,6 +117,11 @@ func validate(cfg *Config) error {
 	}
 	if _, err := time.ParseDuration(cfg.Signals.StaleSessionThreshold); err != nil {
 		return fmt.Errorf("config: stale_session_threshold is invalid: %w", err)
+	}
+	switch cfg.General.DefaultView {
+	case "", "grid", "dashboard":
+	default:
+		return fmt.Errorf("config: default_view must be \"grid\" or \"dashboard\", got %q", cfg.General.DefaultView)
 	}
 	return nil
 }
