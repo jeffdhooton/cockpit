@@ -1,7 +1,12 @@
 # Hook-Driven Status — Design
 
 Date: 2026-09-01
-Status: **draft, awaiting review** — decisions in §8 need your call before planning
+Status: **decided** — §8 resolved, ready to plan
+
+This is the first of two related projects. Remote hosts follow it, and the
+reverse-tunnel status transport for a remote agent (§2.6 of the source
+document) is designed in there rather than retrofitted here. §9 says what that
+leaves out of this one.
 
 Adapted from `BUILD_APP_SUBSYSTEMS.md` §2.6 and §6 ("hook-driven status instead
 of output scraping"), re-grounded in what Cockpit actually is.
@@ -33,9 +38,10 @@ subprocesses per tick on this machine, purely to produce a guess.
 
 ## 2. What replaces it
 
-Claude Code fires hooks at real lifecycle boundaries. A hook posts a small
-structured event to Cockpit's daemon; the daemon records the state; the grid
-reads it. Status stops being inferred and starts being reported.
+Claude Code and Codex both fire hooks at real lifecycle boundaries. A hook
+posts a small structured event to Cockpit's daemon; the daemon records the
+state; the grid reads it. Status stops being inferred and starts being
+reported.
 
 The schema is already in use on this machine — `~/.claude/settings.json` wires
 `scry hook pre-search` the same way, which is the pattern to follow:
@@ -48,16 +54,59 @@ The schema is already in use on this machine — `~/.claude/settings.json` wires
 
 ### Event → state mapping
 
-| Hook event | State | Why |
-|---|---|---|
-| `UserPromptSubmit` | `working` | You just gave it something to do |
-| `PreToolUse` | `working` | Definitely alive and acting |
-| `Notification` | **`needs_input`** | Permission prompt or idle-waiting notice |
-| `Stop` | `idle` | The turn ended |
-| `SessionEnd` | *(cleared)* | Falls back to the pane-hash guess |
+Both engines report. Codex CLI 0.151.0 defines its hook events in
+`codex-rs/config/src/hook_config.rs`, and the set is a superset of the one this
+design needs:
+
+> `PreToolUse` · `PermissionRequest` · `PostToolUse` · `PreCompact` ·
+> `PostCompact` · `SessionStart` · `SessionEnd` · `UserPromptSubmit` ·
+> `SubagentStart` · `SubagentStop` · `Stop`
+
+| State | Claude Code | Codex | Why |
+|---|---|---|---|
+| `working` | `UserPromptSubmit` | `UserPromptSubmit` | You just gave it something to do |
+| `working` | `PreToolUse` | `PreToolUse` | Definitely alive and acting |
+| **`needs_input`** | `Notification` | `PermissionRequest` | It is blocked on you |
+| `idle` | `Stop` | `Stop` | The turn ended |
+| *(cleared)* | `SessionEnd` | `SessionEnd` | Falls back to the pane-hash guess |
 
 `needs_input` is the whole point. It is the state the current implementation
 cannot represent, and the one worth walking across the room for.
+
+**The two `needs_input` events are not the same fact.** Codex's
+`PermissionRequest` fires for exactly one reason. Claude's `Notification` is
+broader — a permission prompt *or* an idle-waiting notice — so it is the
+coarser signal of the two, and a tile driven by Claude will show `needs_input`
+in some cases where a Codex tile would not.
+
+Note what the table does *not* justify: the four shared rows use identical
+names for identical meanings, and the two that diverge use disjoint names, so a
+single merged lookup would produce correct results today. The per-engine table
+is not needed to disambiguate. It is worth keeping anyway for two narrower
+reasons — the payloads differ in shape, so the field allowlist is engine-aware
+regardless; and "this event name means the agent is blocked" is a claim about
+one engine's behaviour at one version, which is better written down as such
+than merged into a list that hides whose claim it was. A future engine is then
+a table entry rather than a new code path.
+
+An event name that appears in no table sets no state, rather than falling
+through to a guess.
+
+### Installing into each engine
+
+Claude Code takes a `hooks` array in `~/.claude/settings.json`. Codex takes
+matcher groups in `~/.codex/config.toml` with `{ type = "command", command,
+timeout, async }` handlers.
+
+Codex adds a step that Claude does not have, and it is the kind that fails
+silently: **a newly written hook lands `untrusted` and does not fire until it
+is trusted, and trust is pinned to a hash of the hook's configuration**
+(`currentHash: "sha256:…"`, and `codex --dangerously-bypass-hook-trust` exists
+precisely to skip the check). Editing the command later re-untrusts it. So
+writing the config is not the same as installing the hook, and an installer
+that stops at the write reports success for something inert. `hook install`
+reads back what it wrote and says plainly whether the hook is live or awaiting
+trust — the preflight-before-effect habit applied to installation.
 
 ## 3. Where the state lives
 
@@ -107,7 +156,7 @@ when reading; a mismatch means inherited, not reported.
 ## 4. Components
 
 ```
-Claude Code
+Claude Code / Codex
   │  fires hook, writes event JSON to stdin
   ▼
 cockpit hook status            (new subcommand — cmd/hook.go)
@@ -130,8 +179,8 @@ Reads the hook payload on stdin and posts it. Three rules:
 
 1. **Never block the agent.** 500ms total timeout, and exit 0 unconditionally —
    including when the daemon is down, the port moved, or the JSON is
-   unrecognisable. A hook that hangs or fails hangs or fails Claude Code. This
-   is the single most important property in the design.
+   unrecognisable. A hook that hangs or fails hangs or fails the agent that
+   called it. This is the single most important property in the design.
 2. **Resolve its own target.** Prefer `$COCKPIT_STATUS_TARGET` (injected into
    processes Cockpit launches). Falling back to
    `tmux display-message -p '#{session_name}:#{window_name}'` covers every
@@ -156,13 +205,24 @@ not forwarded. This is Build's `FIELD_SPECS` discipline (§2.6), and the reason
 is concrete: Claude's `Stop` event can carry an entire assistant message, and
 none of it belongs in a tmux option.
 
+The route goes behind the same `guard` the JSON-RPC routes now use
+(`daemon/mcp.go`): no `Origin` header, `application/json` required, body
+bounded. The guard is per-route rather than middleware today, so adding
+`/hooks/status` means calling it there too — a new write endpoint that skips it
+would reopen exactly what the guard closed.
+
 | Field | Cap | Use |
 |---|---|---|
-| `hook_event_name` | 32 | Maps to a state |
+| `engine` | 16 | Selects the event table; `claude` or `codex` |
+| `hook_event_name` | 32 | Maps to a state within that table |
 | `session_id` | 64 | Correlation only |
 | `target` | 128 | `session:window` |
 | `tool_name` | 64 | Optional detail on the tile |
-| `message` | 200 | `Notification` text, truncated |
+| `message` | 200 | Notification or permission text, truncated |
+
+`engine` is supplied by the installed hook command (`cockpit hook status
+--engine codex`), not sniffed from the payload. The installer knows which file
+it wrote to; the endpoint should not have to guess from field shapes.
 
 Everything else is discarded. Alias spellings (`session_id` / `sessionId`)
 normalise to one name.
@@ -181,18 +241,43 @@ key    = ~/.config/cockpit/status-key   (32 random bytes, mode 0600, made on fir
 The daemon recomputes and compares in constant time. Nothing is stored per run.
 
 **Say plainly what this does and does not do.** Any process running as you can
-read the key, so this is not a defence against local code. It stops a stray
-request from another user or a browser on the machine from writing status, and
-it means the endpoint cannot be driven by accident. Loopback binding does the
-rest.
+read the key, so this is not a defence against local code. It stops a request
+from another user on the machine and means the endpoint cannot be driven by
+accident. The browser case is already handled a layer up by the guard in §4.2,
+so the token is not carrying that weight; loopback binding does the rest.
 
 ### 4.4 TUI
 
-`GetTmuxSessions` gains two format fields. `ClaudeStatus` gains `NeedsInput`.
-Tiles render reported status differently from guessed status — a filled marker
-for reported, hollow for inferred — so the display never presents a guess as a
-fact. `fetchSessionStatuses` and its per-session `capture-pane` loop are deleted
-for sessions that report, and kept as the fallback for those that do not.
+`GetTmuxSessions` gains two format fields. The status type gains `NeedsInput`.
+`fetchSessionStatuses` and its per-session `capture-pane` loop are deleted for
+sessions that report, and kept as the fallback for those that do not.
+
+**The marker scheme carries two facts, and one glyph pair cannot.** This design
+originally proposed filled `●` for reported status and hollow `○` for inferred.
+`StatusRing` (`tui/styles.go`) already claims that pair for a different axis —
+`○` means no session exists, `●` means one does — deliberately, so that absence
+stays legible without colour. Both axes are worth showing and they are
+independent:
+
+| | Session exists | No session |
+|---|---|---|
+| **Status reported** | live, known | *(impossible)* |
+| **Status guessed** | live, inferred | — |
+
+**Settled: shape keeps carrying existence, and dimming carries confidence.**
+Shape is the better carrier for existence because that is the fact a reader
+needs when colour is gone, so `○`/`●` stay as `StatusRing` defines them.
+Reported-versus-inferred moves to a second channel: the status label is dimmed
+when the status is a guess. That costs no width, and on a terminal without
+styling it degrades to "looks the same" rather than "means the wrong thing" —
+which a third glyph would not, since it would spend a column and invite
+confusion with the ring.
+
+The status type is currently named `sources.ClaudeStatus` (`tui/grid.go:20`),
+which stops being true the moment Codex reports into it. `AgentStatus` is the
+honest name. It is mechanical but not tiny — 22 non-test references — so it
+wants its own commit rather than riding along inside a behaviour change. The
+engine, when known, becomes a field on it.
 
 ## 5. Degradation, named
 
@@ -202,8 +287,10 @@ Per Build's rule that nothing silently does less than it claims:
 |---|---|
 | Hook installed, daemon up | Reported status; tile marks it reported |
 | Hook not installed | Pane-hash guess; tile marks it inferred |
+| Hook written but untrusted (Codex) | Nothing fires; `hook install` says so rather than reporting success |
 | Daemon down | Hook exits 0, nothing recorded, falls back to guess |
-| Non-Claude agent (codex, a shell) | Guess, marked inferred |
+| Neither engine (a shell, vim, a build) | Guess, marked inferred |
+| Unrecognised event name | Ignored; no state is invented for it |
 | Status older than 10 minutes | Treated as stale, falls back to guess |
 
 The last row matters: a crashed agent stops sending events, and a `working`
@@ -215,53 +302,75 @@ detectable, which is why it is written alongside the status.
 - **`cockpit hook status`:** exits 0 with no daemon, no tmux, malformed stdin,
   and an empty payload. Respects the timeout. Resolves target from env, then
   from tmux, then gives up quietly.
-- **Endpoint:** each event maps to the right state; unknown fields dropped;
-  oversized fields truncated; bad token rejected; oversized body rejected.
+- **Endpoint:** each engine's events map to the right state; an event name
+  belonging to the other engine, or to neither, sets no state at all; unknown
+  fields dropped; oversized fields truncated; bad token rejected; oversized
+  body rejected.
+- **Install:** merging into a `~/.claude/settings.json` that already holds
+  other hooks preserves them; running twice adds nothing the second time; a
+  backup is written first; the Codex path reports untrusted rather than
+  claiming success.
 - **Store:** the exact `set-option` argv; parsing status out of `list-sessions`;
   inherited-vs-own window values; staleness.
 - **Integration (real tmux):** post an event, read the state back through
   `list-sessions`, confirm it dies with the session.
-- **End to end:** a real Claude Code session with the hook installed moving
-  through working → needs_input → idle.
+- **End to end:** a real session on each engine, hook installed, moving through
+  working → needs_input → idle.
 
 ## 7. Scope
 
-Roughly 500–600 lines including tests: `cmd/hook.go`, `daemon/hooks.go`,
-`sources/status.go`, plus TUI edits. Two to three commits. No new dependencies.
+Roughly 700–800 lines including tests: `cmd/hook.go`, `daemon/hooks.go`,
+`sources/status.go`, plus TUI edits. Three to four commits. No new dependencies.
 
-## 8. Decisions I need from you
+The estimate grew from 500–600 once both engines were in scope. The extra is
+almost entirely installation, not reporting: two config formats to merge
+idempotently, and Codex's trust state to read back and report. The event
+tables themselves are data.
 
-I have made a recommendation on each; none are locked.
+## 8. Decisions
 
-1. **Hook installation.** Recommend `cockpit hook install` writing into
-   `~/.claude/settings.json` (backed up, idempotent) — the same treatment
-   `register-mcp.sh` got. The alternative is documenting a snippet you paste.
-   Automatic editing of your Claude settings is the kind of thing you may want
-   to keep manual.
+All five are settled. Recorded with their reasoning, because the reasoning is
+what a later reader needs.
 
-2. **Fallback target resolution.** Recommend yes — the hook resolves its own
-   tmux target when Cockpit did not launch the process. Without it, only
-   processes Cockpit started report status, which is a small fraction of your
-   sessions. With it, one global hook covers everything. The cost is that
-   Cockpit reports on sessions it does not own.
+1. **`cockpit hook install` edits the config files.** Backed up, idempotent,
+   safe to run twice — the treatment `register-mcp.sh` already got. A hook you
+   forget to install is a feature that silently does not exist. It covers both
+   engines, and because of Codex's trust step (§2) it verifies rather than
+   assumes: the command's last act is to read back what it wrote and report
+   whether the hook is live.
 
-3. **Keep or drop the pane-hash fallback.** Recommend keep, marked as inferred.
-   Dropping it is simpler and more honest, but blanks the status column for
-   every non-Claude session until hooks cover them.
+2. **The hook resolves its own tmux target.** Without it only Cockpit-launched
+   processes report, which is a small fraction of the sessions on the grid.
+   The stated cost — Cockpit reporting on sessions it does not own — is already
+   the status quo: `BuildTargets` (`tui/grid.go:88`) puts every running tmux
+   session on the grid regardless of what the config knows about.
 
-4. **Does `needs_input` earn a signal?** Recommend yes — an agent waiting on you
-   is more actionable than an unpushed commit, so it belongs at the top of the
-   Signals order. Say if you would rather keep Signals to repository state.
+3. **The pane-hash guess stays, marked inferred.** Dropping it is cheaper and
+   more honest, and with both engines reporting it was nearly justified. Remote
+   hosts decide it: a session on the hermes box cannot report until hook
+   traffic has a reverse tunnel, so dropping the guess now blanks every remote
+   tile the day it appears. Scoped as §4.4 describes — no `capture-pane` for a
+   session that reports, the guess only for one that never has.
 
-5. **Codex.** I have not checked whether Codex has an equivalent hook surface.
-   If it does, the same endpoint serves it with a different mapping. Worth a
-   look before building, or worth explicitly deferring.
+4. **`needs_input` goes to the top of Signals.** An agent blocked on you is the
+   most time-sensitive thing Cockpit knows. It will churn more than the other
+   signals, since it clears the moment you answer it, and that is an acceptable
+   price for the one signal you can act on immediately.
+
+5. **Codex reports too, and its mapping is the more precise of the two.**
+   Resolved in §2. The endpoint is engine-agnostic with a per-engine event
+   table.
 
 ## 9. What this does not do
 
-- No remote hosts. Build tunnels hook traffic from a remote box over SSH
-  (§2.6); that is downstream of the unmade decision about whether Cockpit
-  watches a second machine.
+- No remote hosts. Cockpit will watch and drive a second machine — that is
+  decided, and it is the project after this one — but a remote agent's hook
+  traffic needs the reverse tunnel from §2.6 of the source document, and the
+  immutable-port-across-reconnect detail that goes with it. Building it here
+  would mean designing the tunnel before the transport it rides on exists.
+  What this design owes that project is a status store and an endpoint that do
+  not assume the agent is local: the target is already a string, and the
+  endpoint already takes it from the payload rather than inferring it.
 - No transcript, tool arguments, or message bodies. Only enough to colour a
   tile.
 - No history. Current state only — the previous state is not kept, because
