@@ -139,6 +139,15 @@ Reads the hook payload on stdin and posts it. Three rules:
 3. **No-op cleanly outside Cockpit.** No tmux, no daemon, no config → exit 0
    silently. The hook must be safe to leave installed globally forever.
 
+**Do not trust the hook's environment.** A lesson paid for while building the
+daemon: under launchd, `PATH` was `/usr/bin:/bin:/usr/sbin:/sbin` — no Homebrew,
+so no tmux — and with no locale set at all, tmux silently replaced the tab
+separators in `-F` format output with `_`, which made every query parse to
+nothing. Both were invisible because the errors were swallowed as "no sessions".
+The hook runs in whatever environment the agent hands it, so it inherits the
+same exposure: resolve tmux by absolute path, keep using the printable field
+separator, and never treat a failed lookup as an empty result.
+
 ### 4.2 Daemon endpoint
 
 `POST /hooks/status` on the existing loopback server. Body capped at 16KB.
