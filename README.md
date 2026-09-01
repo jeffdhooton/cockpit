@@ -236,6 +236,45 @@ Twelve of the tools mirror Helm's suite one for one; `cockpit_capture` and
 pane's scrollback when you call it, rather than tailing a live stream, so it
 reaches back only as far as tmux's history.
 
+## Agent status
+
+A tile's status — working, idle, or **needs you** — comes from the agent
+itself when it can. Claude Code and Codex both fire hooks at real lifecycle
+boundaries; cockpit installs a tiny one that posts the event name to the
+daemon, which records it as a tmux session option. Nothing else from the
+event leaves the agent: not the prompt, not the tool arguments, not the reply.
+
+```bash
+cockpit hook install
+```
+
+That merges the hook into `~/.claude/settings.json` and `~/.codex/config.toml`,
+backing each up first. It is safe to run twice. The daemon must be running for
+status to land; the hook exits 0 no matter what, so a stopped daemon costs you
+the status and nothing else.
+
+| Tile shows | Meaning |
+|---|---|
+| `● working` | A prompt landed or a tool started |
+| `● idle 4m` | The turn ended |
+| `● needs you` | Blocked on a permission prompt — the one worth walking over for |
+| dimmed label | No hook has reported; this is a guess from pane activity |
+| `○ no session` | Nothing to attach to |
+
+A session that reports is left out of the per-session `capture-pane` poll, so
+the more sessions report, the cheaper the refresh gets. A status older than ten
+minutes is treated as stale and falls back to the guess, so a crashed agent
+cannot stay "working" forever.
+
+**Codex needs one more step.** Codex leaves a newly installed hook untrusted
+and does not run it until you approve it, and trust is pinned to a hash of the
+hook's configuration — editing the command untrusts it again. `hook install`
+reads back what it wrote and tells you which it found. Until you approve the
+hook inside Codex, its sessions stay on the guess.
+
+A waiting agent also appears first in the `cockpit_signals` tool, above a
+dead process.
+
 ## How it works
 
 Cockpit is a single Go binary built with [Bubbletea](https://github.com/charmbracelet/bubbletea). It creates a tmux session and runs the TUI inside it. When you jump to another session, cockpit stays alive in the background. Run `cockpit` again to reattach.
