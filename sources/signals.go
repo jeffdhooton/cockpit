@@ -16,6 +16,7 @@ const defaultStaleThreshold = 24 * time.Hour
 type SignalKind string
 
 const (
+	SignalBlockedAgent SignalKind = "blocked_agent"
 	SignalDeadProcess  SignalKind = "dead_process"
 	SignalFailingCI    SignalKind = "failing_ci"
 	SignalUnpushed     SignalKind = "unpushed"
@@ -40,11 +41,12 @@ type SignalInput struct {
 	Now       time.Time
 }
 
-// ComputeSignals gathers everything that needs attention, most urgent first: a
-// dead process beats failing continuous integration, which beats unpushed work,
-// which beats a session you left open.
+// ComputeSignals gathers everything that needs attention, most urgent first:
+// an agent waiting on you beats a dead process, which beats failing continuous
+// integration, which beats unpushed work, which beats a session you left open.
 func ComputeSignals(in SignalInput) []Signal {
 	var signals []Signal
+	signals = append(signals, blockedAgentSignals(in)...)
 	signals = append(signals, deadProcessSignals(in)...)
 	signals = append(signals, failingCISignals(in)...)
 	signals = append(signals, unpushedSignals(in)...)
@@ -108,6 +110,26 @@ func unpushedSignals(in SignalInput) []Signal {
 			Kind:    SignalUnpushed,
 			Subject: repo.Label,
 			Detail:  fmt.Sprintf("%d unpushed %s", repo.Unpushed, plural(repo.Unpushed, "commit")),
+		})
+	}
+	return out
+}
+
+// blockedAgentSignals is the one signal you can act on immediately. It clears
+// the moment you answer, so it churns more than the others; that is the
+// accepted price for never missing an agent that is waiting.
+func blockedAgentSignals(in SignalInput) []Signal {
+	var out []Signal
+	for _, s := range in.Sessions {
+		// Only a reported status counts. The pane-hash guess cannot see this
+		// state at all, so an inferred needs_input would be a contradiction.
+		if !s.StatusReported || s.Status != AgentStatusNeedsInput {
+			continue
+		}
+		out = append(out, Signal{
+			Kind:    SignalBlockedAgent,
+			Subject: s.Name,
+			Detail:  "waiting on you",
 		})
 	}
 	return out

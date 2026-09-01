@@ -192,3 +192,37 @@ func TestUnpushedDetailIsSingularForOneCommit(t *testing.T) {
 		t.Errorf("detail = %q, want the singular form", got)
 	}
 }
+
+func TestBlockedAgentOutranksEveryOtherSignal(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	in := SignalInput{
+		Config:   config.SignalsConfig{ShowUnpushed: true},
+		Sessions: []TmuxSession{{Name: "app", Status: AgentStatusNeedsInput, StatusReported: true}},
+		Git:      []GitRepoStatus{{Label: "other", Unpushed: 3}},
+		Processes: map[string][]ProcessInfo{
+			"other": {{Name: "dev", Configured: true, State: ProcessDead}},
+		},
+		Now: now,
+	}
+
+	got := ComputeSignals(in)
+
+	if len(got) < 2 {
+		t.Fatalf("want the agent and the other signals, got %+v", got)
+	}
+	if got[0].Kind != SignalBlockedAgent || got[0].Subject != "app" {
+		t.Errorf("a blocked agent must sort above a dead process and an unpushed commit, got %+v", got[0])
+	}
+}
+
+func TestBlockedAgentSignalNeedsAReport(t *testing.T) {
+	// The pane-hash guess cannot see this state, so an unreported needs_input
+	// is a contradiction and must not become a signal.
+	in := SignalInput{
+		Sessions: []TmuxSession{{Name: "app", Status: AgentStatusNeedsInput}},
+		Now:      time.Now(),
+	}
+	if got := ComputeSignals(in); len(got) != 0 {
+		t.Errorf("want no signal from an unreported status, got %+v", got)
+	}
+}
