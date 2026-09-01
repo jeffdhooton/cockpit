@@ -496,3 +496,118 @@ func TestReadOutputCollapsesPanePadding(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOutputReportsWhatItDropped(t *testing.T) {
+	// Forty lines of tmux pane padding get collapsed away. Saying so turns a
+	// silently edited transcript into an honest one.
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"capture-pane": "first\n" + strings.Repeat("\n", 40) + "last\n",
+	}}
+	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
+
+	got, err := tools.Call(context.Background(), "cockpit_read_output",
+		map[string]any{"project": "app", "process": "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		LinesReturned     int  `json:"lines_returned"`
+		BlankLinesRemoved int  `json:"blank_lines_removed"`
+		Truncated         bool `json:"truncated"`
+	}
+	decodeInto(t, got, &payload)
+
+	if payload.LinesReturned != 3 {
+		t.Errorf("lines_returned = %d, want 3 (first, one blank, last)", payload.LinesReturned)
+	}
+	if payload.BlankLinesRemoved != 39 {
+		t.Errorf("blank_lines_removed = %d, want 39", payload.BlankLinesRemoved)
+	}
+	if payload.Truncated {
+		t.Error("42 captured lines is under the 100-line default, so nothing was cut")
+	}
+}
+
+func TestReadOutputReportsTruncation(t *testing.T) {
+	// The capture filled the requested scrollback, so older output exists that
+	// the caller did not see.
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"capture-pane": strings.Repeat("line\n", 10),
+	}}
+	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
+
+	got, err := tools.Call(context.Background(), "cockpit_read_output",
+		map[string]any{"project": "app", "process": "dev", "lines": float64(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Truncated bool `json:"truncated"`
+	}
+	decodeInto(t, got, &payload)
+	if !payload.Truncated {
+		t.Error("hitting the requested line count means there may be more above")
+	}
+}
+
+func TestStatusReportsOmittedEvents(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"capture-pane": "error one\nerror two\nerror three\nerror four\n",
+	}}
+	tools := testTools(t, f, devApp(config.ProcessConfig{
+		Name:    "dev",
+		Command: "x",
+		Status:  &config.StatusPatterns{Error: `error`},
+	}))
+
+	got, err := tools.Call(context.Background(), "cockpit_status",
+		map[string]any{"project": "app", "process": "dev", "limit": float64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Processes []struct {
+			Events  []any `json:"events"`
+			Omitted int   `json:"omitted"`
+		} `json:"processes"`
+	}
+	decodeInto(t, got, &payload)
+
+	if len(payload.Processes[0].Events) != 2 {
+		t.Fatalf("want 2 events, got %d", len(payload.Processes[0].Events))
+	}
+	if payload.Processes[0].Omitted != 2 {
+		t.Errorf("omitted = %d, want 2 — the caller should know it saw a window, not the whole story",
+			payload.Processes[0].Omitted)
+	}
+}
+
+func TestStatusOmittedIsZeroWhenEverythingFits(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"capture-pane": "error one\n",
+	}}
+	tools := testTools(t, f, devApp(config.ProcessConfig{
+		Name: "dev", Command: "x", Status: &config.StatusPatterns{Error: `error`},
+	}))
+
+	got, err := tools.Call(context.Background(), "cockpit_status", map[string]any{"project": "app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Processes []struct {
+			Omitted int `json:"omitted"`
+		} `json:"processes"`
+	}
+	decodeInto(t, got, &payload)
+	if payload.Processes[0].Omitted != 0 {
+		t.Errorf("omitted = %d, want 0", payload.Processes[0].Omitted)
+	}
+}

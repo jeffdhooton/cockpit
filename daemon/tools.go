@@ -33,6 +33,9 @@ type Tools struct {
 	Version    string
 	Port       int
 	Now        func() time.Time
+	// Settle tunes how long to wait for a spawned agent to finish booting.
+	// Injectable so tests do not sleep.
+	Settle settleOptions
 }
 
 // NewTools builds the tool set backed by a config and a tmux runner.
@@ -44,6 +47,7 @@ func NewTools(cfg *config.Config, configPath string, r sources.Runner, version s
 		Version:    version,
 		Port:       port,
 		Now:        time.Now,
+		Settle:     defaultSettleOptions(),
 	}
 }
 
@@ -161,12 +165,32 @@ func (t *Tools) readOutput(ctx context.Context, args map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
+
+	captured := countLines(out)
+	collapsed := collapseBlankRuns(out)
+	returned := countLines(collapsed)
+
 	return map[string]any{
 		"project": repo.Label,
 		"process": window,
 		"lines":   lines,
-		"output":  collapseBlankRuns(out),
+		"output":  collapsed,
+		// Say what was dropped. A silently edited transcript is worse than a
+		// short one, because the caller cannot tell which it got.
+		"lines_returned":      returned,
+		"blank_lines_removed": captured - returned,
+		"truncated":           captured >= lines,
 	}, nil
+}
+
+// countLines counts the lines in captured output, treating empty output as
+// zero lines rather than one.
+func countLines(s string) int {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
 
 func (t *Tools) gitStatus(ctx context.Context, args map[string]any) (any, error) {
@@ -297,13 +321,18 @@ func (t *Tools) status(ctx context.Context, args map[string]any) (any, error) {
 	type processStatus struct {
 		Process string        `json:"process"`
 		Events  []statusEvent `json:"events"`
+		// Omitted is how many further matches the limit cut off, so a caller
+		// knows whether it saw a window or the whole story.
+		Omitted int `json:"omitted"`
 	}
 
 	out := make([]processStatus, 0, len(targets))
 	for _, p := range targets {
+		events, omitted := t.scanStatus(ctx, repo, p, limit)
 		out = append(out, processStatus{
 			Process: p.Name,
-			Events:  t.scanStatus(ctx, repo, p, limit),
+			Events:  events,
+			Omitted: omitted,
 		})
 	}
 	return map[string]any{"project": repo.Label, "processes": out}, nil
@@ -312,10 +341,10 @@ func (t *Tools) status(ctx context.Context, args map[string]any) (any, error) {
 // scanStatus matches a process's status patterns against its scrollback,
 // newest line first. Cockpit has no live event stream — tmux's history is the
 // record — so events are labelled with where they came from.
-func (t *Tools) scanStatus(ctx context.Context, repo config.RepoConfig, p config.ProcessConfig, limit int) []statusEvent {
+func (t *Tools) scanStatus(ctx context.Context, repo config.RepoConfig, p config.ProcessConfig, limit int) ([]statusEvent, int) {
 	patterns := p.Status.All()
 	if len(patterns) == 0 {
-		return []statusEvent{}
+		return []statusEvent{}, 0
 	}
 
 	compiled := make(map[string]*regexp.Regexp, len(patterns))
@@ -329,12 +358,13 @@ func (t *Tools) scanStatus(ctx context.Context, repo config.RepoConfig, p config
 
 	out, err := t.Runner.Run(ctx, sources.CapturePaneArgs(sources.Target(repo.Label, p.Name), maxOutputLines)...)
 	if err != nil {
-		return []statusEvent{}
+		return []statusEvent{}, 0
 	}
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	events := []statusEvent{}
-	for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
+	omitted := 0
+	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
 		// Deterministic order when one line matches several patterns.
 		for _, label := range []string{"error", "ready", "compiling", "restarting"} {
@@ -346,6 +376,12 @@ func (t *Tools) scanStatus(ctx context.Context, repo config.RepoConfig, p config
 			if m == "" {
 				continue
 			}
+			// Keep counting past the limit so the caller learns how much it
+			// did not see.
+			if len(events) >= limit {
+				omitted++
+				break
+			}
 			events = append(events, statusEvent{
 				Type:   label,
 				Line:   strings.TrimSpace(line),
@@ -355,7 +391,7 @@ func (t *Tools) scanStatus(ctx context.Context, repo config.RepoConfig, p config
 			break
 		}
 	}
-	return events
+	return events, omitted
 }
 
 // collapseBlankRuns trims leading and trailing blank lines and squeezes any

@@ -44,7 +44,8 @@ func (t *Tools) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "cockpit_read_output",
-			Description: "Read the last N lines of a process's terminal output. Works for configured processes and for any open window, including spawned agents.",
+			Description: "Read the last N lines of a process's terminal output. Works for configured processes and for any open window, including spawned agents. " +
+				"Reports what it dropped: blank_lines_removed counts collapsed pane padding, and truncated means the capture reached the requested scrollback so older output exists above it.",
 			InputSchema: obj(map[string]any{
 				"project": str(projectDesc),
 				"process": str(processDesc),
@@ -103,7 +104,9 @@ func (t *Tools) Definitions() []ToolDefinition {
 					"description":          "Additional environment variables",
 					"additionalProperties": map[string]any{"type": "string"},
 				},
-				"prompt": str("Opening instruction, typed once the agent's startup output goes quiet"),
+				"prompt": str("Opening instruction, typed once the agent's startup output goes quiet. " +
+					"The call waits for delivery and reports the outcome in prompt_delivery; a process that " +
+					"exited first is reported as not delivered rather than typed into."),
 			}, "command"),
 		},
 		{
@@ -130,7 +133,7 @@ func (t *Tools) Definitions() []ToolDefinition {
 			InputSchema: obj(map[string]any{
 				"project": str(projectDesc),
 				"process": str(processDesc + " (optional — omit for every process in the project)"),
-				"limit":   integer("Max events per process (default 16, max 64). Newest first."),
+				"limit":   integer("Max events per process (default 16, max 64). Newest first; each process reports an omitted count for matches beyond the limit."),
 			}, "project"),
 		},
 		{

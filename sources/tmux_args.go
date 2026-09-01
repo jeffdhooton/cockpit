@@ -9,7 +9,7 @@ import (
 )
 
 // windowFormat is the list-windows format string ParseWindows expects.
-const windowFormat = "#{window_index}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{window_active}"
+const windowFormat = "#{window_index}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{window_active}\t#{pane_dead_status}"
 
 // sessionFormat is the list-sessions format string parseTmuxOutput expects.
 const sessionFormat = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_last_attached}"
@@ -21,6 +21,9 @@ type Window struct {
 	Dead    bool
 	PanePID int
 	Active  bool
+	// DeadStatus is the exit status of a dead pane's command. It is what turns
+	// "it died" into "it could not find the command".
+	DeadStatus int
 }
 
 // Target builds a tmux target string for a window inside a session.
@@ -123,12 +126,18 @@ func ParseWindows(out string) []Window {
 		}
 		index, _ := strconv.Atoi(parts[0])
 		pid, _ := strconv.Atoi(parts[3])
+		// A live pane reports an empty status, and older tmux omits the field.
+		deadStatus := 0
+		if len(parts) > 5 {
+			deadStatus, _ = strconv.Atoi(parts[5])
+		}
 		windows = append(windows, Window{
-			Index:   index,
-			Name:    parts[1],
-			Dead:    parts[2] == "1",
-			PanePID: pid,
-			Active:  parts[4] == "1",
+			Index:      index,
+			Name:       parts[1],
+			Dead:       parts[2] == "1",
+			PanePID:    pid,
+			Active:     parts[4] == "1",
+			DeadStatus: deadStatus,
 		})
 	}
 	return windows

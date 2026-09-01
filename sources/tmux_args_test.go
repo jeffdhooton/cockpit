@@ -154,3 +154,30 @@ func TestParseWindowsSkipsMalformedLines(t *testing.T) {
 		t.Errorf("malformed lines should be skipped, got %+v", got)
 	}
 }
+
+func TestParseWindowsReadsDeadStatus(t *testing.T) {
+	// The exit status is what turns "it died" into "it could not find the
+	// command", so a receipt can name the reason.
+	out := "1\tghost\t1\t222\t0\t127\n"
+	got := ParseWindows(out)
+	if len(got) != 1 {
+		t.Fatalf("want 1 window, got %d", len(got))
+	}
+	if !got[0].Dead || got[0].DeadStatus != 127 {
+		t.Errorf("got %+v, want dead with status 127", got[0])
+	}
+}
+
+func TestParseWindowsToleratesMissingDeadStatus(t *testing.T) {
+	// A live window reports an empty dead status, and older tmux may omit the
+	// field entirely. Neither should drop the window.
+	for _, line := range []string{
+		"1\tdev\t0\t222\t1\t\n",
+		"1\tdev\t0\t222\t1\n",
+	} {
+		got := ParseWindows(line)
+		if len(got) != 1 || got[0].Name != "dev" || got[0].DeadStatus != 0 {
+			t.Errorf("line %q parsed to %+v", line, got)
+		}
+	}
+}

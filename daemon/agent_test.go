@@ -392,3 +392,132 @@ func TestTasksRejectsABadLine(t *testing.T) {
 		t.Fatal("toggling a line that is not there must error")
 	}
 }
+
+// deliveryOf runs spawn_agent and returns the reported prompt_delivery.
+func deliveryOf(t *testing.T, tools *Tools, args map[string]any) string {
+	t.Helper()
+	got, err := tools.Call(context.Background(), "cockpit_spawn_agent", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		PromptDelivery string `json:"prompt_delivery"`
+	}
+	decodeInto(t, got, &payload)
+	return payload.PromptDelivery
+}
+
+func TestPromptIsNotTypedIntoADeadPane(t *testing.T) {
+	// A command that does not exist dies instantly. remain-on-exit keeps the
+	// corpse, a corpse settles perfectly, and without a liveness check the
+	// prompt gets typed into it and lost.
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tghost\t1\t222\t0\t127\n",
+		"capture-pane": "command not found\n",
+	}}
+	tools := testTools(t, f, devApp())
+	tools.Settle = fastSettle()
+
+	delivery := deliveryOf(t, tools, map[string]any{
+		"project": "app", "command": "nope", "name": "ghost", "prompt": "do the thing",
+	})
+
+	if len(f.called("send-keys")) != 0 {
+		t.Errorf("nothing should be typed into a dead pane: %v", f.calls)
+	}
+	if !strings.Contains(delivery, "not delivered") {
+		t.Errorf("delivery = %q, want it to say the prompt was not delivered", delivery)
+	}
+	if !strings.Contains(delivery, "127") {
+		t.Errorf("delivery = %q, want it to name the exit status", delivery)
+	}
+}
+
+func TestPromptDeliveryReportsATerminalOutcome(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\thelper\t0\t222\t0\t\n",
+		"capture-pane": "ready\n",
+	}}
+	tools := testTools(t, f, devApp())
+	tools.Settle = fastSettle()
+
+	delivery := deliveryOf(t, tools, map[string]any{
+		"project": "app", "command": "bash", "name": "helper", "prompt": "hello",
+	})
+
+	if delivery != "delivered" {
+		t.Errorf("delivery = %q, want %q", delivery, "delivered")
+	}
+	if len(f.called("send-keys")) != 2 {
+		t.Errorf("want the prompt and Enter, got %v", f.called("send-keys"))
+	}
+}
+
+func TestPromptDeliveryNeverReportsPending(t *testing.T) {
+	// "pending" is a receipt, not an answer. The caller has no second place to
+	// look, so the tool must resolve it before returning.
+	for _, windows := range []string{
+		"1\thelper\t0\t222\t0\t\n",
+		"1\thelper\t1\t222\t0\t127\n",
+	} {
+		f := &fakeRunner{outputs: map[string]string{
+			"list-windows": windows,
+			"capture-pane": "something\n",
+		}}
+		tools := testTools(t, f, devApp())
+		tools.Settle = fastSettle()
+
+		delivery := deliveryOf(t, tools, map[string]any{
+			"project": "app", "command": "x", "name": "helper", "prompt": "p",
+		})
+		if delivery == "" || strings.Contains(delivery, "pending") {
+			t.Errorf("delivery = %q, want a terminal outcome", delivery)
+		}
+	}
+}
+
+func TestPromptNotDeliveredWhenTheWindowVanishes(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tsomething-else\t0\t222\t0\t\n",
+		"capture-pane": "output\n",
+	}}
+	tools := testTools(t, f, devApp())
+	tools.Settle = fastSettle()
+
+	delivery := deliveryOf(t, tools, map[string]any{
+		"project": "app", "command": "x", "name": "helper", "prompt": "p",
+	})
+
+	if len(f.called("send-keys")) != 0 {
+		t.Errorf("a window that is gone must not be typed into: %v", f.calls)
+	}
+	if !strings.Contains(delivery, "not delivered") {
+		t.Errorf("delivery = %q", delivery)
+	}
+}
+
+func TestSpawnWithoutPromptReportsNoDelivery(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{"list-windows": "1\thelper\t0\t222\t0\t\n"}}
+	tools := testTools(t, f, devApp())
+	tools.Settle = fastSettle()
+
+	if delivery := deliveryOf(t, tools, map[string]any{
+		"project": "app", "command": "x", "name": "helper",
+	}); delivery != "" {
+		t.Errorf("no prompt means no delivery to report, got %q", delivery)
+	}
+	if len(f.called("capture-pane")) != 0 {
+		t.Errorf("without a prompt there is nothing to wait for: %v", f.calls)
+	}
+}
+
+// fastSettle keeps the settle heuristic intact but on a timescale tests can
+// afford.
+func fastSettle() settleOptions {
+	return settleOptions{
+		HeadStart: time.Millisecond,
+		Poll:      time.Millisecond,
+		Quiet:     2 * time.Millisecond,
+		Deadline:  50 * time.Millisecond,
+	}
+}

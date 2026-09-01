@@ -194,25 +194,51 @@ func (t *Tools) spawnAgent(ctx context.Context, args map[string]any) (any, error
 		"command": command,
 	}
 
-	// Delivering the prompt takes seconds of waiting for the agent to boot.
-	// Do it in the background so the caller gets the window handle now.
+	// Delivery is synchronous. "pending" would be a receipt, not an answer, and
+	// the caller has no second place to look up how it turned out.
 	if prompt := argString(args, "prompt"); prompt != "" {
-		result["prompt_delivery"] = "pending"
-		go t.deliverPrompt(sources.Target(repo.Label, name), prompt)
+		result["prompt_delivery"] = t.deliverPrompt(ctx, repo.Label, name, prompt)
 	}
 	return result, nil
 }
 
-// deliverPrompt waits for a spawned agent to look ready, then types the prompt.
-// If it never settles the prompt is sent anyway — a slightly early prompt beats
-// no prompt at all.
-func (t *Tools) deliverPrompt(target, prompt string) {
-	ctx := context.Background()
-	waitForSettle(ctx, t.Runner, target, defaultSettleOptions())
-	if _, err := t.Runner.Run(ctx, sources.SendKeysLiteralArgs(target, prompt)...); err != nil {
-		return
+// deliverPrompt waits for a spawned agent to look ready, checks it is still
+// alive, then types the prompt. It returns a terminal outcome describing what
+// actually happened.
+//
+// The liveness check is the point. A command that does not exist dies
+// instantly, remain-on-exit keeps the corpse, and a corpse settles perfectly —
+// so without it the prompt gets typed into a dead pane and silently lost.
+func (t *Tools) deliverPrompt(ctx context.Context, session, window, prompt string) string {
+	target := sources.Target(session, window)
+	waitForSettle(ctx, t.Runner, target, t.Settle)
+
+	windows, err := sources.ListWindows(ctx, t.Runner, session)
+	if err != nil {
+		return "not delivered: could not check whether the process was still running: " + err.Error()
 	}
-	_, _ = t.Runner.Run(ctx, sources.SendKeysEnterArgs(target)...)
+
+	var found *sources.Window
+	for i := range windows {
+		if windows[i].Name == window {
+			found = &windows[i]
+			break
+		}
+	}
+	switch {
+	case found == nil:
+		return "not delivered: the window disappeared before the prompt could be sent"
+	case found.Dead:
+		return fmt.Sprintf("not delivered: the process exited with status %d before the prompt could be sent", found.DeadStatus)
+	}
+
+	if _, err := t.Runner.Run(ctx, sources.SendKeysLiteralArgs(target, prompt)...); err != nil {
+		return "not delivered: " + err.Error()
+	}
+	if _, err := t.Runner.Run(ctx, sources.SendKeysEnterArgs(target)...); err != nil {
+		return "not delivered: typed but could not submit: " + err.Error()
+	}
+	return "delivered"
 }
 
 // agentTarget resolves where to spawn, defaulting to the first configured repo.
