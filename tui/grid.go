@@ -14,11 +14,14 @@ import (
 // session, or both joined on session.Name == repo.Label — the same identity
 // tmuxJump already assumes when it switches to a session named for a repo.
 type Target struct {
-	Label     string
-	Session   *sources.TmuxSession
-	Repo      *sources.GitRepoStatus
-	Status    sources.AgentStatus
-	Processes []sources.ProcessInfo
+	Label   string
+	Session *sources.TmuxSession
+	Repo    *sources.GitRepoStatus
+	Status  sources.AgentStatus
+	// StatusReported is true when Status came from an agent hook rather than
+	// the pane-hash guess. The tile dims a guess so it never reads as a fact.
+	StatusReported bool
+	Processes      []sources.ProcessInfo
 }
 
 // Running reports whether the target has a live tmux session behind it.
@@ -92,10 +95,11 @@ func BuildTargets(
 		}
 		live[s.Name] = true
 		running = append(running, Target{
-			Label:   s.Name,
-			Session: s,
-			Repo:    repoByLabel[s.Name],
-			Status:  statuses[s.Name],
+			Label:          s.Name,
+			Session:        s,
+			Repo:           repoByLabel[s.Name],
+			Status:         statuses[s.Name],
+			StatusReported: s.StatusReported,
 		})
 	}
 
@@ -209,15 +213,27 @@ func renderTile(t Target, width int, selected bool) string {
 		if t.Session.Attached {
 			status = StatusDot("attached", VariantAccent)
 		}
+		// A guessed status is dimmed so it never reads as a fact. Colour is
+		// the cheapest channel: it costs no width, and on a terminal without
+		// styling it degrades to "looks the same" rather than "means the
+		// wrong thing".
+		dot := StatusDot
+		if !t.StatusReported {
+			dot = StatusDotDim
+		}
 		switch t.Status {
 		case sources.AgentStatusIdle:
 			label := "idle"
 			if age := formatIdleTime(t.Session.LastUsed); age != "" {
 				label = "idle " + age
 			}
-			status = StatusDot(Truncate(label, inner-2), VariantNeutral)
+			status = dot(Truncate(label, inner-2), VariantNeutral)
 		case sources.AgentStatusWorking:
-			status = StatusDot("working", VariantAccent)
+			status = dot("working", VariantAccent)
+		case sources.AgentStatusNeedsInput:
+			// Only ever reported: the guess cannot see this state, so there
+			// is no dim variant to draw.
+			status = StatusDot(Truncate("needs you", inner-2), VariantWarning)
 		}
 	}
 

@@ -16,12 +16,51 @@ type SessionsModel struct {
 	Cursor     int
 	Loading    bool
 	Statuses   map[string]sources.AgentStatus // session name → status
+	Reported   map[string]bool                // session name → status came from a hook
 	prevHashes map[string]string              // session name → previous content hash
+}
+
+// AdoptReported copies each session's hook-reported status into Statuses,
+// so every reader of that map sees the report without knowing where it came
+// from, and records which names are reported so the display can mark the
+// rest as guessed.
+//
+// A session that stopped reporting — a crashed agent going stale in tmux —
+// drops back to inferred here rather than freezing on its last report.
+func (m *SessionsModel) AdoptReported() {
+	if m.Statuses == nil {
+		m.Statuses = make(map[string]sources.AgentStatus)
+	}
+	m.Reported = make(map[string]bool, len(m.Sessions))
+	for _, s := range m.Sessions {
+		if !s.StatusReported {
+			continue
+		}
+		m.Statuses[s.Name] = s.Status
+		m.Reported[s.Name] = true
+	}
+}
+
+// NeedingCapture returns the sessions whose status still has to be guessed
+// from pane content. A session that reports needs no capture, and the
+// capture is the most expensive poll cockpit runs.
+func (m SessionsModel) NeedingCapture() []sources.TmuxSession {
+	var out []sources.TmuxSession
+	for _, s := range m.Sessions {
+		if !m.Reported[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // UpdateStatus compares current pane content against the previous snapshot.
 // If the content changed, the session is working. If unchanged, it's idle.
 func (m *SessionsModel) UpdateStatus(name, content string) {
+	// A capture already in flight when a report landed must not clobber it.
+	if m.Reported[name] {
+		return
+	}
 	if m.Statuses == nil {
 		m.Statuses = make(map[string]sources.AgentStatus)
 	}

@@ -302,7 +302,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessions.Sessions = filtered
 		m.sessions.Loading = false
-		// Fetch preview for currently selected session + status for all sessions
+		// A hook-reported status arrives on the same list-sessions call, so
+		// adopt it before deciding which sessions still need a pane capture.
+		m.sessions.AdoptReported()
 		cmds = append(cmds, m.fetchPreview(), m.fetchSessionStatuses())
 
 	case sessionStatusMsg:
@@ -915,6 +917,8 @@ func (m Model) renderPreviewHeader(width int) string {
 			status = StatusDot("Idle", VariantMuted)
 		case sources.AgentStatusWorking:
 			status = StatusDot("Working", VariantAccent)
+		case sources.AgentStatusNeedsInput:
+			status = StatusDot("Needs you", VariantWarning)
 		}
 	}
 
@@ -1239,6 +1243,8 @@ func (m *Model) renderSearchDialog() string {
 				statusDot = ErrorText.Render("●")
 			case sources.AgentStatusWorking:
 				statusDot = SuccessText.Render("●")
+			case sources.AgentStatusNeedsInput:
+				statusDot = WarningText.Render("●")
 			}
 		}
 
@@ -1270,7 +1276,9 @@ func (m *Model) renderSearchDialog() string {
 }
 
 func (m Model) fetchSessionStatuses() tea.Cmd {
-	sessions := m.sessions.Sessions
+	// One capture-pane per session per tick is the most expensive poll
+	// cockpit runs. A session that reports its own status needs none.
+	sessions := m.sessions.NeedingCapture()
 	return func() tea.Msg {
 		ctx := context.Background()
 		snapshots := make(map[string]string, len(sessions))

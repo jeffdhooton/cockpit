@@ -105,6 +105,14 @@ func StatusDot(label string, v Variant) string {
 	return style.Render("●") + " " + style.Render(label)
 }
 
+// StatusDotDim renders a status whose value was inferred rather than reported.
+// The dot keeps its colour so the state is still readable at a glance; only
+// the label is muted, which is the cue that it is a guess.
+func StatusDotDim(label string, v Variant) string {
+	style := lipgloss.NewStyle().Foreground(variantColor(v))
+	return style.Render("●") + " " + MutedText.Render(label)
+}
+
 // StatusRing renders a hollow marker for an absent/inactive resource. Keeping
 // absence distinct by shape makes it legible even without terminal colour.
 func StatusRing(label string, v Variant) string {

@@ -598,3 +598,47 @@ func TestRenderTileKeepsHeightWithProcesses(t *testing.T) {
 		t.Errorf("tile height = %d, want %d — the indicator must not add a line:\n%s", got, gridTileH, out)
 	}
 }
+
+func TestRenderTileShowsNeedsInput(t *testing.T) {
+	s := sess("app")
+	s.Status, s.StatusReported = sources.AgentStatusNeedsInput, true
+	out := renderTile(Target{Label: "app", Session: &s, Status: sources.AgentStatusNeedsInput, StatusReported: true}, 22, false)
+
+	if !strings.Contains(out, "needs you") {
+		t.Errorf("a blocked agent must say so:\n%s", out)
+	}
+}
+
+func TestRenderTileKeepsExistenceOnShape(t *testing.T) {
+	// Shape carries existence; confidence is carried by dimming. A reported
+	// status must not change the marker glyph.
+	s := sess("app")
+	s.Status, s.StatusReported = sources.AgentStatusWorking, true
+	out := renderTile(Target{Label: "app", Session: &s, Status: sources.AgentStatusWorking, StatusReported: true}, 22, false)
+
+	if !strings.Contains(out, "●") || strings.Contains(out, "○") {
+		t.Errorf("a live session keeps the filled marker:\n%s", out)
+	}
+}
+
+func TestBuildTargetsCarriesWhetherStatusWasReported(t *testing.T) {
+	reported := sess("app")
+	reported.Status, reported.StatusReported = sources.AgentStatusWorking, true
+	guessed := sess("docs")
+
+	targets := BuildTargets(
+		[]sources.TmuxSession{reported, guessed}, nil,
+		map[string]sources.AgentStatus{"app": sources.AgentStatusWorking, "docs": sources.AgentStatusWorking},
+		"cockpit")
+
+	byLabel := map[string]Target{}
+	for _, t := range targets {
+		byLabel[t.Label] = t
+	}
+	if !byLabel["app"].StatusReported {
+		t.Error("app's status came from a hook and must say so")
+	}
+	if byLabel["docs"].StatusReported {
+		t.Error("docs' status is a guess and must not claim otherwise")
+	}
+}
