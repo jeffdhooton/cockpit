@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -149,5 +150,42 @@ func TestServeStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not stop when its context was cancelled")
+	}
+}
+
+func TestIsServingProbesThePort(t *testing.T) {
+	// A daemon started by launchd writes no pidfile, so the pidfile alone
+	// cannot answer "is it running?" — probing the port can.
+	cfg := &config.Config{}
+	tools := NewTools(cfg, "/tmp/config.toml", &fakeRunner{}, "1", 0)
+
+	ln, err := listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = Serve(ctx, ln, tools, "1") }()
+
+	// Give the listener a moment to accept.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !IsServing(port) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !IsServing(port) {
+		t.Error("a served port should report as serving")
+	}
+
+	free, err := listen(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freePort := free.Addr().(*net.TCPAddr).Port
+	free.Close()
+	if IsServing(freePort) {
+		t.Error("a closed port should not report as serving")
 	}
 }

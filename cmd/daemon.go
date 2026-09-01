@@ -99,6 +99,11 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 		fmt.Printf("cockpit daemon is already running (pid %d, port %d)\n", pid, cfg.Daemon.Port)
 		return nil
 	}
+	if daemon.IsServing(cfg.Daemon.Port) {
+		fmt.Printf("port %d is already serving — the launch agent may have started it\n", cfg.Daemon.Port)
+		fmt.Println("run `cockpit daemon status`, or `cockpit daemon uninstall` to remove the launch agent")
+		return nil
+	}
 	// Anything left here is a corpse from a previous run.
 	_ = os.Remove(pidPath)
 
@@ -143,9 +148,19 @@ func runDaemonStart(cmd *cobra.Command, args []string) error {
 }
 
 func runDaemonStop(cmd *cobra.Command, args []string) error {
+	cfg, _, err := loadDaemonConfig()
+	if err != nil {
+		return err
+	}
+
 	pidPath := daemon.PidFilePath()
 	pid, err := daemon.ReadPidFile(pidPath)
 	if err != nil {
+		if daemon.IsServing(cfg.Daemon.Port) {
+			fmt.Printf("port %d is serving but no pidfile exists — the launch agent owns it\n", cfg.Daemon.Port)
+			fmt.Println("run `cockpit daemon uninstall` to stop it")
+			return nil
+		}
 		fmt.Println("cockpit daemon is not running")
 		return nil
 	}
@@ -175,12 +190,17 @@ func runDaemonStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	pid, err := daemon.ReadPidFile(daemon.PidFilePath())
-	if err != nil || !daemon.IsRunning(pid) {
+	switch {
+	case err == nil && daemon.IsRunning(pid):
+		fmt.Printf("cockpit daemon: running (pid %d)\n", pid)
+	case daemon.IsServing(cfg.Daemon.Port):
+		// No pidfile, but the port answers — a launch agent started it.
+		fmt.Println("cockpit daemon: running (started by the launch agent)")
+	default:
 		fmt.Println("cockpit daemon: stopped")
 		return nil
 	}
 
-	fmt.Printf("cockpit daemon: running (pid %d)\n", pid)
 	fmt.Printf("endpoint: http://127.0.0.1:%d/mcp\n", cfg.Daemon.Port)
 	fmt.Printf("logs: %s\n", daemon.LogFilePath())
 	return nil

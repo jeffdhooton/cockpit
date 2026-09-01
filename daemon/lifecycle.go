@@ -70,6 +70,18 @@ func IsRunning(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
+// IsServing reports whether something is already listening on the daemon's
+// port. A daemon started by launchd writes no pidfile, so this is the only way
+// to notice it is up.
+func IsServing(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // listen binds the loopback interface. The daemon is never reachable from off
 // the machine.
 func listen(port int) (net.Listener, error) {

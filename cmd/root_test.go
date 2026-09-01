@@ -1,9 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestInitCreatesConfig(t *testing.T) {
@@ -42,5 +47,33 @@ func TestInitDoesNotOverwrite(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "existing" {
 		t.Errorf("config was overwritten: got %q", string(data))
+	}
+}
+
+func TestRuntimeErrorsDoNotPrintUsage(t *testing.T) {
+	// A failing command should show its error, not bury it under twenty lines
+	// of help text. Cobra prints usage on RunE errors unless told not to.
+	failing := &cobra.Command{
+		Use:  "boom",
+		RunE: func(*cobra.Command, []string) error { return errors.New("cannot bind port 45679") },
+	}
+	rootCmd.AddCommand(failing)
+	t.Cleanup(func() { rootCmd.RemoveCommand(failing) })
+
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"boom"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	})
+
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("the command should have failed")
+	}
+	if strings.Contains(out.String(), "Usage:") {
+		t.Errorf("a runtime error must not print usage, got:\n%s", out.String())
 	}
 }

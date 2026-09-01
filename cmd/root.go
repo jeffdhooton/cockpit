@@ -28,6 +28,9 @@ var rootCmd = &cobra.Command{
 	Use:   "cockpit",
 	Short: "tmux-native Terminal Command Center",
 	RunE:  runRoot,
+	// A command that fails at runtime should show its error, not bury it under
+	// the full help text. Usage still prints for genuine usage mistakes.
+	SilenceUsage: true,
 }
 
 var initCmd = &cobra.Command{
