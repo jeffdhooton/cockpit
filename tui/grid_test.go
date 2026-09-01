@@ -298,6 +298,27 @@ func TestRenderTileShowsGitStateForDormantRepo(t *testing.T) {
 	}
 }
 
+func TestRenderTileDistinguishesIdleFromNoSession(t *testing.T) {
+	idleSession := sess("idle-app")
+	idle := Target{
+		Label:   idleSession.Name,
+		Session: &idleSession,
+		Status:  sources.ClaudeStatusIdle,
+	}
+	dormantRepo := repo("dormant-app")
+	dormant := Target{Label: dormantRepo.Label, Repo: &dormantRepo}
+
+	idleOut := renderTile(idle, 22, false)
+	dormantOut := renderTile(dormant, 22, false)
+
+	if !strings.Contains(idleOut, "●") || strings.Contains(idleOut, "○") {
+		t.Errorf("idle session should use only the filled live-session marker:\n%s", idleOut)
+	}
+	if !strings.Contains(dormantOut, "○") || strings.Contains(dormantOut, "●") {
+		t.Errorf("repo with no session should use only the hollow absence marker:\n%s", dormantOut)
+	}
+}
+
 // lipgloss Width() counts padding but not border, so the tile's declared width
 // must account for both or tiles come up short and leave a ragged gap.
 func TestRenderTileFillsItsCell(t *testing.T) {

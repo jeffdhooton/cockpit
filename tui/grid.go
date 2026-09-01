@@ -201,7 +201,9 @@ func renderTile(t Target, width int, selected bool) string {
 	}
 	name := nameStyle.Render(Truncate(t.Label, inner))
 
-	status := StatusDot("no session", VariantMuted)
+	// Shape carries session existence: a hollow ring means there is nothing to
+	// attach to, while every live session keeps the filled status dot.
+	status := StatusRing("no session", VariantMuted)
 	if t.Running() {
 		status = StatusDot("detached", VariantMuted)
 		if t.Session.Attached {
@@ -213,7 +215,7 @@ func renderTile(t Target, width int, selected bool) string {
 			if age := formatIdleTime(t.Session.LastUsed); age != "" {
 				label = "idle " + age
 			}
-			status = StatusDot(Truncate(label, inner-2), VariantMuted)
+			status = StatusDot(Truncate(label, inner-2), VariantNeutral)
 		case sources.ClaudeStatusWorking:
 			status = StatusDot("working", VariantAccent)
 		}

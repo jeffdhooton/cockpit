@@ -105,6 +105,13 @@ func StatusDot(label string, v Variant) string {
 	return style.Render("●") + " " + style.Render(label)
 }
 
+// StatusRing renders a hollow marker for an absent/inactive resource. Keeping
+// absence distinct by shape makes it legible even without terminal colour.
+func StatusRing(label string, v Variant) string {
+	style := lipgloss.NewStyle().Foreground(variantColor(v))
+	return style.Render("○") + " " + style.Render(label)
+}
+
 // Breadcrumb renders a muted uppercase trail, e.g. "LOCAL / COCKPIT".
 func Breadcrumb(parts ...string) string {
 	upper := make([]string, 0, len(parts))
