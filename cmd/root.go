@@ -61,6 +61,7 @@ func init() {
 
 	hookStatusCmd.Flags().StringVar(&hookEngine, "engine", "claude", "reporting engine: claude or codex")
 	hookCmd.AddCommand(hookStatusCmd)
+	hookCmd.AddCommand(hookInstallCmd)
 	rootCmd.AddCommand(hookCmd)
 }
 
