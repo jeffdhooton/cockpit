@@ -398,3 +398,15 @@ label = "my-app"
 		t.Errorf("got %q want %q", got, want)
 	}
 }
+
+func TestDirIsTheParentOfTheConfigFile(t *testing.T) {
+	// The status key lives beside config.toml, and both the hook and the
+	// daemon resolve it independently. They must agree on where that is.
+	dir := Dir()
+	if dir == "" {
+		t.Fatal("config dir must resolve")
+	}
+	if got := DefaultConfigPath(); filepath.Dir(got) != dir {
+		t.Errorf("config path %q is not inside dir %q", got, dir)
+	}
+}

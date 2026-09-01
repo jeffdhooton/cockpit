@@ -90,8 +90,8 @@ func listen(port int) (net.Listener, error) {
 
 // Serve runs the tool server on an existing listener until the context is
 // cancelled.
-func Serve(ctx context.Context, ln net.Listener, tools ToolHandler, version string) error {
-	srv := &http.Server{Handler: NewServer(tools, version).Handler()}
+func Serve(ctx context.Context, ln net.Listener, tools ToolHandler, version string, statusKey []byte, runner sources.Runner) error {
+	srv := &http.Server{Handler: newServerWithStatus(tools, version, statusKey, runner).Handler()}
 
 	errs := make(chan error, 1)
 	go func() {
@@ -135,9 +135,19 @@ func Run(ctx context.Context, cfg *config.Config, configPath, version string) er
 		fmt.Fprintf(os.Stderr, "cockpit daemon: using tmux at %s\n", tmuxPath)
 	}
 
+	// The status key is not required to serve tools. A daemon that cannot read
+	// or create it still answers every existing query; only the hook endpoint
+	// goes dark, and it says so with a 503 rather than accepting an unproven
+	// caller.
+	statusKey, err := LoadOrCreateStatusKey(config.Dir())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cockpit daemon: %v\n", err)
+		fmt.Fprintln(os.Stderr, "cockpit daemon: serving anyway; hook status will be refused")
+	}
+
 	tools := NewTools(cfg, configPath, runner, version, cfg.Daemon.Port)
 	fmt.Fprintf(os.Stderr, "cockpit daemon listening on http://127.0.0.1:%d/mcp\n", cfg.Daemon.Port)
-	return Serve(ctx, ln, tools, version)
+	return Serve(ctx, ln, tools, version, statusKey, runner)
 }
 
 // fallbackPath is used when the installing shell has no PATH worth copying. It

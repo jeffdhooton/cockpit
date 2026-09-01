@@ -203,3 +203,16 @@ func TestStatusEndpointRequiresATarget(t *testing.T) {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
 }
+
+func TestStatusEndpointRefusesWhenUnconfigured(t *testing.T) {
+	// A server built without a key cannot authenticate anything. Refusing
+	// says so, where accepting would write status for an unproven caller.
+	s := NewServer(&stubTools{}, "1")
+
+	rec := postStatus(t, s, "anything",
+		`{"engine":"claude","hook_event_name":"Stop","target":"app:dev"}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}

@@ -147,11 +147,22 @@ type SignalsConfig struct {
 }
 
 func DefaultConfigPath() string {
+	dir := Dir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "config.toml")
+}
+
+// Dir is cockpit's configuration directory. The status key lives here beside
+// config.toml, and the hook and the daemon each resolve it independently, so
+// they need one answer rather than two spellings of it.
+func Dir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "cockpit", "config.toml")
+	return filepath.Join(home, ".config", "cockpit")
 }
 
 func Load(path string) (*Config, error) {

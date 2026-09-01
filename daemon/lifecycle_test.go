@@ -104,7 +104,7 @@ func TestServeAnswersToolsList(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = Serve(ctx, ln, tools, "9.9.9") }()
+	go func() { _ = Serve(ctx, ln, tools, "9.9.9", nil, nil) }()
 
 	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/mcp", body)
@@ -144,7 +144,7 @@ func TestServeStopsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, ln, tools, "1") }()
+	go func() { done <- Serve(ctx, ln, tools, "1", nil, nil) }()
 
 	cancel()
 	select {
@@ -171,7 +171,7 @@ func TestIsServingProbesThePort(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = Serve(ctx, ln, tools, "1") }()
+	go func() { _ = Serve(ctx, ln, tools, "1", nil, nil) }()
 
 	// Give the listener a moment to accept.
 	deadline := time.Now().Add(3 * time.Second)
