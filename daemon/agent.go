@@ -249,13 +249,16 @@ func (t *Tools) capture(args map[string]any) (any, error) {
 	if text == "" {
 		return nil, fmt.Errorf("text is required")
 	}
-	if t.Cfg.Obsidian.InboxFile == "" {
-		return nil, fmt.Errorf("no inbox_file configured")
+	// Captures land in today_file, the same place `cockpit cap` and the TUI's
+	// c key put them.
+	file := t.Cfg.Obsidian.TodayFile
+	if file == "" {
+		return nil, fmt.Errorf("no today_file configured")
 	}
-	if err := sources.AppendInbox(t.Cfg.Obsidian.InboxFile, text); err != nil {
+	if err := sources.AppendInbox(file, text); err != nil {
 		return nil, err
 	}
-	return map[string]any{"captured": text, "file": t.Cfg.Obsidian.InboxFile}, nil
+	return map[string]any{"captured": text, "file": file}, nil
 }
 
 func (t *Tools) tasks(args map[string]any) (any, error) {

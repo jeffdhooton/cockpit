@@ -23,6 +23,21 @@ inbox_file = "~/vault/inbox.md"
 # [[repos]]
 # path = "~/workspace/my-project"
 # label = "my-project"
+#
+#   Background processes launch as tmux windows when you jump to the project.
+#   Window 0 stays your shell and is where you land; each process gets its own
+#   numbered window. Navigate with prefix+1..9, prefix+n/p, or prefix+w.
+#   [[repos.processes]]
+#   name = "dev"
+#   command = "npm run dev"
+#   auto_start = true
+#   # working_dir = "packages/web"   # relative to the repo, or absolute
+#   # env = { PORT = "3000" }
+#
+#     Optional patterns that cockpit_status matches against the process output.
+#     [repos.processes.status]
+#     ready = 'Local:\s+(\S+)'
+#     error = 'error|failed'
 
 # [[repos]]
 # path = "~/workspace/another-project"
@@ -43,4 +58,10 @@ show_stale_sessions = true
 show_unpushed = true
 # Show repos with failing CI in signals panel
 show_failing_ci = true
+
+[daemon]
+# Serve the tool server so agents (Claude Code, Codex) can drive the workspace
+enabled = true
+# Port the tool server binds on loopback
+port = 45679
 `

@@ -1305,7 +1305,7 @@ func tmuxJumpRepo(repo config.RepoConfig) error {
 	_ = sources.ReconcileProcesses(ctx, r, repo)
 
 	if created {
-		_, _ = r.Run(ctx, sources.SelectWindowArgs(repo.Label, 0)...)
+		_, _ = r.Run(ctx, sources.SelectFirstWindowArgs(repo.Label)...)
 	}
 	return exec.Command("tmux", "switch-client", "-t", repo.Label).Run()
 }

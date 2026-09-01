@@ -165,7 +165,7 @@ func (t *Tools) readOutput(ctx context.Context, args map[string]any) (any, error
 		"project": repo.Label,
 		"process": window,
 		"lines":   lines,
-		"output":  strings.TrimRight(out, "\n"),
+		"output":  collapseBlankRuns(out),
 	}, nil
 }
 
@@ -356,6 +356,29 @@ func (t *Tools) scanStatus(ctx context.Context, repo config.RepoConfig, p config
 		}
 	}
 	return events
+}
+
+// collapseBlankRuns trims leading and trailing blank lines and squeezes any
+// interior run down to one. tmux pads a pane to its full height, so without
+// this a one-line crash message comes back buried in forty blank lines the
+// caller pays for.
+func collapseBlankRuns(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			blank = true
+			continue
+		}
+		if blank && len(out) > 0 {
+			out = append(out, "")
+		}
+		blank = false
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 // --- lookup helpers ---

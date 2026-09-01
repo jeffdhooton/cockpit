@@ -444,3 +444,55 @@ func TestSignalsIncludesDeadProcesses(t *testing.T) {
 		t.Errorf("got %+v", payload.Signals[0])
 	}
 }
+
+func TestCollapseBlankRuns(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"single blank kept", "a\n\nb", "a\n\nb"},
+		{"run collapsed", "a\n\n\n\n\n\nb", "a\n\nb"},
+		{"leading blanks dropped", "\n\n\na", "a"},
+		{"trailing blanks dropped", "a\n\n\n", "a"},
+		{"whitespace counts as blank", "a\n   \n\t\n\nb", "a\n\nb"},
+		{"no blanks untouched", "a\nb\nc", "a\nb\nc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := collapseBlankRuns(tc.in); got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadOutputCollapsesPanePadding(t *testing.T) {
+	// tmux pads a pane to its full height, so a one-line crash comes back
+	// buried in blank lines the caller has to pay for.
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1\tdev\t1\t222\t0\n",
+		"capture-pane": "fatal: on fire\n" + strings.Repeat("\n", 40) + "Pane is dead\n",
+	}}
+	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
+
+	got, err := tools.Call(context.Background(), "cockpit_read_output",
+		map[string]any{"project": "app", "process": "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Output string `json:"output"`
+	}
+	decodeInto(t, got, &payload)
+
+	if strings.Contains(payload.Output, "\n\n\n") {
+		t.Errorf("pane padding should collapse, got %q", payload.Output)
+	}
+	for _, want := range []string{"fatal: on fire", "Pane is dead"} {
+		if !strings.Contains(payload.Output, want) {
+			t.Errorf("collapsing must not drop content: %q missing from %q", want, payload.Output)
+		}
+	}
+}

@@ -312,28 +312,34 @@ func TestSpawnAgentWithoutAPromptDoesNotWait(t *testing.T) {
 	}
 }
 
-func TestCaptureAppendsToTheInbox(t *testing.T) {
-	inbox := filepath.Join(t.TempDir(), "inbox.md")
+func TestCaptureLandsWhereTheCommandLinePutsIt(t *testing.T) {
+	// `cockpit cap` and the TUI's c key both append to today_file, so the tool
+	// must too — a capture that lands somewhere else is a capture you lose.
+	today := filepath.Join(t.TempDir(), "today.md")
 	tools := testTools(t, &fakeRunner{})
-	tools.Cfg.Obsidian.InboxFile = inbox
+	tools.Cfg.Obsidian.TodayFile = today
+	tools.Cfg.Obsidian.InboxFile = filepath.Join(t.TempDir(), "inbox.md")
 
 	if _, err := tools.Call(context.Background(), "cockpit_capture",
 		map[string]any{"text": "fix the auth bug"}); err != nil {
 		t.Fatal(err)
 	}
 
-	data, err := os.ReadFile(inbox)
+	data, err := os.ReadFile(today)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), "fix the auth bug") {
-		t.Errorf("inbox = %q", data)
+		t.Errorf("today = %q", data)
+	}
+	if _, err := os.Stat(tools.Cfg.Obsidian.InboxFile); err == nil {
+		t.Error("the capture should not have touched inbox_file")
 	}
 }
 
 func TestCaptureRequiresText(t *testing.T) {
 	tools := testTools(t, &fakeRunner{})
-	tools.Cfg.Obsidian.InboxFile = filepath.Join(t.TempDir(), "inbox.md")
+	tools.Cfg.Obsidian.TodayFile = filepath.Join(t.TempDir(), "today.md")
 
 	if _, err := tools.Call(context.Background(), "cockpit_capture", map[string]any{}); err == nil {
 		t.Fatal("capturing nothing must error")

@@ -135,7 +135,7 @@ func (t *Tools) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "cockpit_capture",
-			Description: "Capture a thought to the inbox file for later triage — the same thing `cockpit cap` does from a terminal",
+			Description: "Capture a thought to today's list for later triage — the same thing `cockpit cap` does from a terminal",
 			InputSchema: obj(map[string]any{
 				"text": str("What to capture"),
 			}, "text"),

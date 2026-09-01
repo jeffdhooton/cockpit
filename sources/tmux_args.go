@@ -62,9 +62,12 @@ func RemainOnExitArgs(session, window string) []string {
 	return []string{"set-window-option", "-t", Target(session, window), "remain-on-exit", "on"}
 }
 
-// SelectWindowArgs builds the argv for focusing a window by index.
-func SelectWindowArgs(session string, index int) []string {
-	return []string{"select-window", "-t", session + ":" + strconv.Itoa(index)}
+// SelectFirstWindowArgs builds the argv for focusing a session's first window
+// — the user's shell. It asks tmux for the lowest-numbered window rather than
+// index 0, because base-index 1 is a common setting and there is no window 0
+// under it.
+func SelectFirstWindowArgs(session string) []string {
+	return []string{"select-window", "-t", session + ":{start}"}
 }
 
 // ListWindowsArgs builds the argv for listing a session's windows in the

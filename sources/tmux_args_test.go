@@ -81,11 +81,18 @@ func TestRemainOnExitArgs(t *testing.T) {
 	}
 }
 
-func TestSelectWindowArgs(t *testing.T) {
-	got := SelectWindowArgs("my-app", 0)
-	want := []string{"select-window", "-t", "my-app:0"}
+func TestSelectFirstWindowArgs(t *testing.T) {
+	got := SelectFirstWindowArgs("my-app")
+	want := []string{"select-window", "-t", "my-app:{start}"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q want %q", got, want)
+	}
+	// Hardcoding index 0 breaks for anyone with base-index 1 set, which is a
+	// very common tmux configuration.
+	for _, arg := range got {
+		if arg == "my-app:0" {
+			t.Error("must not assume the first window is index 0")
+		}
 	}
 }
 

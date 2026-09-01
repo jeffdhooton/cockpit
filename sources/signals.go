@@ -107,7 +107,7 @@ func unpushedSignals(in SignalInput) []Signal {
 		out = append(out, Signal{
 			Kind:    SignalUnpushed,
 			Subject: repo.Label,
-			Detail:  fmt.Sprintf("%d unpushed commits", repo.Unpushed),
+			Detail:  fmt.Sprintf("%d unpushed %s", repo.Unpushed, plural(repo.Unpushed, "commit")),
 		})
 	}
 	return out
@@ -135,6 +135,14 @@ func staleSessionSignals(in SignalInput) []Signal {
 		})
 	}
 	return out
+}
+
+// plural returns the noun in the form matching n.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return noun
+	}
+	return noun + "s"
 }
 
 // formatAge renders a duration as the coarsest useful unit.

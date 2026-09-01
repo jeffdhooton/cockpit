@@ -181,3 +181,14 @@ var errNotARepo = errStr("not a git repository")
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+func TestUnpushedDetailIsSingularForOneCommit(t *testing.T) {
+	in := SignalInput{
+		Config: config.SignalsConfig{ShowUnpushed: true},
+		Git:    []GitRepoStatus{{Label: "app", Unpushed: 1}},
+		Now:    time.Now(),
+	}
+	if got := ComputeSignals(in)[0].Detail; got != "1 unpushed commit" {
+		t.Errorf("detail = %q, want the singular form", got)
+	}
+}
