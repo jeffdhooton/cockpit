@@ -10,6 +10,8 @@ import (
 	"mime"
 	"net/http"
 	"time"
+
+	"github.com/jhoot/cockpit/sources"
 )
 
 // baselineProtocol is the version assumed when a client asks for one this
@@ -41,6 +43,13 @@ type Server struct {
 	Tools     ToolHandler
 	Version   string
 	SessionID string
+
+	// StatusKey derives per-target hook tokens and Runner writes the status
+	// into tmux. Both are nil on a server built by NewServer alone, and the
+	// status route then refuses every request rather than accepting one it
+	// cannot authenticate.
+	StatusKey []byte
+	Runner    sources.Runner
 }
 
 // NewServer builds a server with a fresh session id.
@@ -50,6 +59,14 @@ func NewServer(tools ToolHandler, version string) *Server {
 		Version:   version,
 		SessionID: fmt.Sprintf("cockpit-%x", time.Now().UnixNano()),
 	}
+}
+
+// newServerWithStatus builds a server that can also record hook status.
+func newServerWithStatus(tools ToolHandler, version string, key []byte, r sources.Runner) *Server {
+	s := NewServer(tools, version)
+	s.StatusKey = key
+	s.Runner = r
+	return s
 }
 
 type jsonRPCRequest struct {
@@ -90,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.serve)
 	mux.HandleFunc("/mcp", s.serve)
+	mux.HandleFunc("/hooks/status", s.serveStatus)
 	return mux
 }
 
