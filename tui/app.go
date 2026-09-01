@@ -911,9 +911,9 @@ func (m Model) renderPreviewHeader(width int) string {
 	status := ""
 	if st, ok := m.sessions.Statuses[name]; ok {
 		switch st {
-		case sources.ClaudeStatusIdle:
+		case sources.AgentStatusIdle:
 			status = StatusDot("Idle", VariantMuted)
-		case sources.ClaudeStatusWorking:
+		case sources.AgentStatusWorking:
 			status = StatusDot("Working", VariantAccent)
 		}
 	}
@@ -1235,9 +1235,9 @@ func (m *Model) renderSearchDialog() string {
 		statusDot := MutedText.Render("○")
 		if st, ok := m.sessions.Statuses[s.Name]; ok {
 			switch st {
-			case sources.ClaudeStatusIdle:
+			case sources.AgentStatusIdle:
 				statusDot = ErrorText.Render("●")
-			case sources.ClaudeStatusWorking:
+			case sources.AgentStatusWorking:
 				statusDot = SuccessText.Render("●")
 			}
 		}

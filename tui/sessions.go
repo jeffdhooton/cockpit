@@ -15,15 +15,15 @@ type SessionsModel struct {
 	Sessions   []sources.TmuxSession
 	Cursor     int
 	Loading    bool
-	Statuses   map[string]sources.ClaudeStatus // session name → detected status
-	prevHashes map[string]string               // session name → previous content hash
+	Statuses   map[string]sources.AgentStatus // session name → status
+	prevHashes map[string]string              // session name → previous content hash
 }
 
 // UpdateStatus compares current pane content against the previous snapshot.
 // If the content changed, the session is working. If unchanged, it's idle.
 func (m *SessionsModel) UpdateStatus(name, content string) {
 	if m.Statuses == nil {
-		m.Statuses = make(map[string]sources.ClaudeStatus)
+		m.Statuses = make(map[string]sources.AgentStatus)
 	}
 	if m.prevHashes == nil {
 		m.prevHashes = make(map[string]string)
@@ -35,14 +35,14 @@ func (m *SessionsModel) UpdateStatus(name, content string) {
 
 	if !seen {
 		// First poll — can't determine yet
-		m.Statuses[name] = sources.ClaudeStatusUnknown
+		m.Statuses[name] = sources.AgentStatusUnknown
 		return
 	}
 
 	if hash == prev {
-		m.Statuses[name] = sources.ClaudeStatusIdle
+		m.Statuses[name] = sources.AgentStatusIdle
 	} else {
-		m.Statuses[name] = sources.ClaudeStatusWorking
+		m.Statuses[name] = sources.AgentStatusWorking
 	}
 }
 
@@ -91,16 +91,16 @@ func (m SessionsModel) renderCard(s sources.TmuxSession, selected bool) string {
 		nameStyle = nameStyle.Foreground(ColorAccent)
 	}
 
-	// Claude Code status indicator (from content-hash diffing)
+	// Status indicator: reported when available, hashed otherwise.
 	statusText := StatusDot("Detached", VariantMuted)
 	if s.Attached {
 		statusText = StatusDot("Attached", VariantAccent)
 	}
 	if st, ok := m.Statuses[s.Name]; ok {
 		switch st {
-		case sources.ClaudeStatusIdle:
+		case sources.AgentStatusIdle:
 			statusText = StatusDot("Idle", VariantMuted)
-		case sources.ClaudeStatusWorking:
+		case sources.AgentStatusWorking:
 			statusText = StatusDot("Working", VariantAccent)
 		}
 	}
@@ -169,9 +169,9 @@ func (m SessionsModel) CompactView(width int, focused bool) string {
 		}
 		if st, ok := m.Statuses[s.Name]; ok {
 			switch st {
-			case sources.ClaudeStatusIdle:
+			case sources.AgentStatusIdle:
 				status = StatusDot("Idle", VariantMuted)
-			case sources.ClaudeStatusWorking:
+			case sources.AgentStatusWorking:
 				status = StatusDot("Working", VariantAccent)
 			}
 		}

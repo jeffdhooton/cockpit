@@ -91,9 +91,9 @@ func TestBuildTargetsOrdersRunningBeforeDormantAlphabetically(t *testing.T) {
 }
 
 func TestBuildTargetsCarriesStatus(t *testing.T) {
-	statuses := map[string]sources.ClaudeStatus{"my-app": sources.ClaudeStatusWorking}
+	statuses := map[string]sources.AgentStatus{"my-app": sources.AgentStatusWorking}
 	targets := BuildTargets([]sources.TmuxSession{sess("my-app")}, nil, statuses, "cockpit")
-	if targets[0].Status != sources.ClaudeStatusWorking {
+	if targets[0].Status != sources.AgentStatusWorking {
 		t.Errorf("Status = %v, want Working", targets[0].Status)
 	}
 }
@@ -303,7 +303,7 @@ func TestRenderTileDistinguishesIdleFromNoSession(t *testing.T) {
 	idle := Target{
 		Label:   idleSession.Name,
 		Session: &idleSession,
-		Status:  sources.ClaudeStatusIdle,
+		Status:  sources.AgentStatusIdle,
 	}
 	dormantRepo := repo("dormant-app")
 	dormant := Target{Label: dormantRepo.Label, Repo: &dormantRepo}

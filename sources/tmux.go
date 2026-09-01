@@ -125,13 +125,19 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 	return sessions, nil
 }
 
-// ClaudeStatus represents the detected state of a Claude Code session.
-type ClaudeStatus int
+// AgentStatus represents the reported or inferred state of a coding agent
+// running in a tmux session. Both Claude Code and Codex report into it, which
+// is why it is not named for either.
+type AgentStatus int
 
 const (
-	ClaudeStatusUnknown ClaudeStatus = iota
-	ClaudeStatusIdle                 // pane content unchanged between polls — waiting for input
-	ClaudeStatusWorking              // pane content changed since last poll — actively producing output
+	AgentStatusUnknown AgentStatus = iota
+	AgentStatusIdle                // the turn ended
+	AgentStatusWorking             // acting: a prompt landed or a tool started
+	// AgentStatusNeedsInput is the state the pane-hash guess cannot see at
+	// all. An agent blocked on a permission prompt looks exactly like an idle
+	// one from outside, and it is the one worth walking across the room for.
+	AgentStatusNeedsInput
 )
 
 // CapturePaneContent returns the full visible pane content for hashing/comparison.

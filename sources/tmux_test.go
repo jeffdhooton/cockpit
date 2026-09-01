@@ -59,3 +59,14 @@ func TestParseTmuxOutputMalformed(t *testing.T) {
 		t.Errorf("got %d sessions, want 0 (malformed lines skipped)", len(sessions))
 	}
 }
+
+func TestAgentStatusNeedsInputIsDistinct(t *testing.T) {
+	// needs_input is the state pane hashing cannot represent. It must not
+	// collide with idle, which is what a blocked agent looks like from outside.
+	if AgentStatusNeedsInput == AgentStatusIdle {
+		t.Fatal("needs_input must be distinct from idle")
+	}
+	if AgentStatusNeedsInput == AgentStatusUnknown {
+		t.Fatal("needs_input must be distinct from unknown")
+	}
+}

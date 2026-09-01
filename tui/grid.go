@@ -17,7 +17,7 @@ type Target struct {
 	Label     string
 	Session   *sources.TmuxSession
 	Repo      *sources.GitRepoStatus
-	Status    sources.ClaudeStatus
+	Status    sources.AgentStatus
 	Processes []sources.ProcessInfo
 }
 
@@ -74,7 +74,7 @@ func processIndicatorDegraded(infos []sources.ProcessInfo) bool {
 func BuildTargets(
 	sessions []sources.TmuxSession,
 	repos []sources.GitRepoStatus,
-	statuses map[string]sources.ClaudeStatus,
+	statuses map[string]sources.AgentStatus,
 	selfSession string,
 ) []Target {
 	repoByLabel := make(map[string]*sources.GitRepoStatus, len(repos))
@@ -210,13 +210,13 @@ func renderTile(t Target, width int, selected bool) string {
 			status = StatusDot("attached", VariantAccent)
 		}
 		switch t.Status {
-		case sources.ClaudeStatusIdle:
+		case sources.AgentStatusIdle:
 			label := "idle"
 			if age := formatIdleTime(t.Session.LastUsed); age != "" {
 				label = "idle " + age
 			}
 			status = StatusDot(Truncate(label, inner-2), VariantNeutral)
-		case sources.ClaudeStatusWorking:
+		case sources.AgentStatusWorking:
 			status = StatusDot("working", VariantAccent)
 		}
 	}
