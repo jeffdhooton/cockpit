@@ -102,24 +102,37 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 			continue
 		}
 		parts := strings.Split(line, fieldSep)
-		if len(parts) < 4 {
+		if len(parts) < 7 {
 			continue
 		}
 
-		// Layout is name | windows | attached | last_attached, and the name may
-		// contain the separator, so anchor on the three numeric fields at the
-		// end and treat everything before them as the name.
-		nameEnd := len(parts) - 3
+		// Layout is name | windows | attached | last_attached | status |
+		// status_at | status_window, and the name may contain the separator,
+		// so anchor on the six fixed fields at the end and treat everything
+		// before them as the name.
+		nameEnd := len(parts) - 6
+		if nameEnd < 1 {
+			continue
+		}
 		windows, _ := strconv.Atoi(parts[nameEnd])
 		attached := parts[nameEnd+1] == "1"
 		epoch, _ := strconv.ParseInt(parts[nameEnd+2], 10, 64)
 		lastUsed := time.Unix(epoch, 0)
 
+		// The recorded window is passed as both the stored and the wanted
+		// value: at session level the option is authoritative by definition,
+		// and the inheritance check only matters when reading one window.
+		reportedWindow := parts[nameEnd+5]
+		status, reported := StatusFromOptions(
+			parts[nameEnd+3], parts[nameEnd+4], reportedWindow, reportedWindow, time.Now())
+
 		sessions = append(sessions, TmuxSession{
-			Name:     strings.Join(parts[:nameEnd], fieldSep),
-			Windows:  windows,
-			Attached: attached,
-			LastUsed: lastUsed,
+			Name:           strings.Join(parts[:nameEnd], fieldSep),
+			Windows:        windows,
+			Attached:       attached,
+			LastUsed:       lastUsed,
+			Status:         status,
+			StatusReported: reported,
 		})
 	}
 	return sessions, nil

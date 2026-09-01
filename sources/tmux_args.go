@@ -22,7 +22,13 @@ const fieldSep = "|"
 const windowFormat = "#{window_index}|#{window_name}|#{pane_dead}|#{pane_pid}|#{window_active}|#{pane_dead_status}"
 
 // sessionFormat is the list-sessions format string parseTmuxOutput expects.
-const sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_last_attached}"
+//
+// The three @cockpit_* fields ride along on a call the TUI already makes every
+// tick, which is what lets the per-session capture-pane loop go away rather
+// than having anything added to it. tmux reports an option that was never set
+// as empty rather than failing, so a session that has never reported still
+// produces a well-formed line.
+const sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_last_attached}|#{@cockpit_status}|#{@cockpit_status_at}|#{@cockpit_status_window}"
 
 // Window is one tmux window in a session.
 type Window struct {

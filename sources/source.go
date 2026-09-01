@@ -8,6 +8,11 @@ type TmuxSession struct {
 	Windows  int
 	Attached bool
 	LastUsed time.Time
+	// Status is the agent state. StatusReported separates a status an agent
+	// hook actually sent from one the pane-hash fallback guessed, so the
+	// display can mark a guess as a guess.
+	Status         AgentStatus
+	StatusReported bool
 }
 
 // GitRepoStatus represents the git status of a single repository.

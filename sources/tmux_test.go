@@ -1,12 +1,15 @@
 package sources
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
 
 func TestParseTmuxOutput(t *testing.T) {
-	input := "dev|3|1|1700000000\nserver|1|0|1699990000\n"
+	// Seven fields: the three trailing @cockpit_* status options are empty
+	// here, which is exactly what tmux emits for a session that never reported.
+	input := "dev|3|1|1700000000|||\nserver|1|0|1699990000|||\n"
 	sessions, err := parseTmuxOutput(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -68,5 +71,61 @@ func TestAgentStatusNeedsInputIsDistinct(t *testing.T) {
 	}
 	if AgentStatusNeedsInput == AgentStatusUnknown {
 		t.Fatal("needs_input must be distinct from unknown")
+	}
+}
+
+func TestParseSessionsReadsReportedStatus(t *testing.T) {
+	now := time.Now().Unix()
+	out := "app|3|1|" + strconv.FormatInt(now, 10) + "|working|" + strconv.FormatInt(now, 10) + "|dev\n"
+	sessions, err := parseTmuxOutput(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("want 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Name != "app" {
+		t.Errorf("name = %q", sessions[0].Name)
+	}
+	if !sessions[0].StatusReported || sessions[0].Status != AgentStatusWorking {
+		t.Errorf("want a reported working status, got %+v", sessions[0])
+	}
+}
+
+func TestParseSessionsHandlesUnsetStatusOptions(t *testing.T) {
+	// A session that never reported yields empty option fields, not an error.
+	out := "docket|1|0|1788250990|||\n"
+	sessions, err := parseTmuxOutput(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Name != "docket" {
+		t.Fatalf("got %+v", sessions)
+	}
+	if sessions[0].StatusReported {
+		t.Error("a session with no status must not read as reported")
+	}
+}
+
+func TestParseSessionsKeepsSeparatorInName(t *testing.T) {
+	// The name is anchored on the trailing fixed fields precisely so a name
+	// containing the separator survives.
+	out := "a|b|2|0|1788250990|idle|1788250990|zsh\n"
+	sessions, _ := parseTmuxOutput(out)
+	if len(sessions) != 1 || sessions[0].Name != "a|b" {
+		t.Fatalf("name = %q, want \"a|b\"", sessions[0].Name)
+	}
+}
+
+func TestParseSessionsHandlesNeverAttachedSession(t *testing.T) {
+	// Verified against real tmux: session_last_attached is empty, not zero,
+	// for a session nobody has attached to yet. The field count still holds.
+	out := "fresh|1|0||needs_input|" + strconv.FormatInt(time.Now().Unix(), 10) + "|dev\n"
+	sessions, _ := parseTmuxOutput(out)
+	if len(sessions) != 1 || sessions[0].Name != "fresh" {
+		t.Fatalf("got %+v", sessions)
+	}
+	if !sessions[0].StatusReported {
+		t.Error("an empty last_attached must not stop the status from parsing")
 	}
 }

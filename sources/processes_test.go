@@ -317,7 +317,7 @@ func TestStopAndRestartProcess(t *testing.T) {
 
 func TestListSessionsUsesTheRunner(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-sessions": "app|2|1|1700000000\ndocs|1|0|1700000001\n",
+		"list-sessions": "app|2|1|1700000000|||\ndocs|1|0|1700000001|||\n",
 	}}
 
 	got, err := ListSessions(context.Background(), f)
