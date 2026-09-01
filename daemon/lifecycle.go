@@ -120,14 +120,48 @@ func Run(ctx context.Context, cfg *config.Config, configPath, version string) er
 		return fmt.Errorf("cannot bind port %d: %w", cfg.Daemon.Port, err)
 	}
 
-	tools := NewTools(cfg, configPath, sources.DefaultRunner(), version, cfg.Daemon.Port)
+	// Preflight: one cheap question before serving. A daemon that cannot find
+	// tmux answers every query with an empty world, which reads as "nothing is
+	// running" rather than "I cannot see". Resolve the absolute path now and
+	// use it, so a thin PATH cannot silently blind the daemon later.
+	runner := sources.DefaultRunner()
+	tmuxPath, err := sources.ResolveTmux()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cockpit daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "cockpit daemon: PATH=%s\n", os.Getenv("PATH"))
+		fmt.Fprintln(os.Stderr, "cockpit daemon: serving anyway; tmux-backed tools will report this error rather than an empty result")
+	} else {
+		runner = sources.ExecRunner{Binary: tmuxPath}
+		fmt.Fprintf(os.Stderr, "cockpit daemon: using tmux at %s\n", tmuxPath)
+	}
+
+	tools := NewTools(cfg, configPath, runner, version, cfg.Daemon.Port)
 	fmt.Fprintf(os.Stderr, "cockpit daemon listening on http://127.0.0.1:%d/mcp\n", cfg.Daemon.Port)
 	return Serve(ctx, ln, tools, version)
 }
 
+// fallbackPath is used when the installing shell has no PATH worth copying. It
+// names the usual package-manager locations, because launchd's own
+// /usr/bin:/bin:/usr/sbin:/sbin contains no tmux on a typical Mac.
+const fallbackPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+// LaunchAgentOptions is what the plist needs to render.
+type LaunchAgentOptions struct {
+	BinPath    string
+	ConfigPath string
+	LogPath    string
+	// Path is the PATH the daemon runs with. launchd supplies a bare one that
+	// cannot find a Homebrew tmux, so the installing shell's PATH is copied in.
+	Path string
+}
+
 // LaunchAgentPlist renders the macOS launch agent that keeps the daemon up
 // across logins.
-func LaunchAgentPlist(binPath, configPath, logPath string) string {
+func LaunchAgentPlist(o LaunchAgentOptions) string {
+	path := o.Path
+	if path == "" {
+		path = fallbackPath
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -141,6 +175,11 @@ func LaunchAgentPlist(binPath, configPath, logPath string) string {
 		<string>--config</string>
 		<string>%s</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>%s</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
@@ -151,7 +190,7 @@ func LaunchAgentPlist(binPath, configPath, logPath string) string {
 	<string>%s</string>
 </dict>
 </plist>
-`, LaunchAgentLabel, binPath, configPath, logPath, logPath)
+`, LaunchAgentLabel, o.BinPath, o.ConfigPath, path, o.LogPath, o.LogPath)
 }
 
 // LaunchAgentPath is where the plist is installed.

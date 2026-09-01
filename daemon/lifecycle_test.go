@@ -62,7 +62,11 @@ func TestIsRunning(t *testing.T) {
 }
 
 func TestLaunchAgentPlistContainsPaths(t *testing.T) {
-	plist := LaunchAgentPlist("/usr/local/bin/cockpit", "/home/j/.config/cockpit/config.toml", "/home/j/.config/cockpit/daemon.log")
+	plist := LaunchAgentPlist(LaunchAgentOptions{
+		BinPath:    "/usr/local/bin/cockpit",
+		ConfigPath: "/home/j/.config/cockpit/config.toml",
+		LogPath:    "/home/j/.config/cockpit/daemon.log",
+	})
 
 	for _, want := range []string{
 		LaunchAgentLabel,
@@ -187,5 +191,35 @@ func TestIsServingProbesThePort(t *testing.T) {
 	free.Close()
 	if IsServing(freePort) {
 		t.Error("a closed port should not report as serving")
+	}
+}
+
+func TestLaunchAgentPlistCarriesPath(t *testing.T) {
+	// launchd hands an agent a bare /usr/bin:/bin:/usr/sbin:/sbin, which does
+	// not include Homebrew — so a daemon started at login could not find tmux
+	// and reported an empty world instead of an error.
+	plist := LaunchAgentPlist(LaunchAgentOptions{
+		BinPath:    "/usr/local/bin/cockpit",
+		ConfigPath: "/home/j/.config/cockpit/config.toml",
+		LogPath:    "/home/j/.config/cockpit/daemon.log",
+		Path:       "/opt/homebrew/bin:/usr/bin:/bin",
+	})
+
+	if !strings.Contains(plist, "<key>EnvironmentVariables</key>") {
+		t.Error("plist must set an environment")
+	}
+	if !strings.Contains(plist, "/opt/homebrew/bin:/usr/bin:/bin") {
+		t.Errorf("plist must carry the PATH that could actually find tmux:\n%s", plist)
+	}
+}
+
+func TestLaunchAgentPlistFallsBackToASanePath(t *testing.T) {
+	plist := LaunchAgentPlist(LaunchAgentOptions{
+		BinPath: "/usr/local/bin/cockpit", ConfigPath: "/c.toml", LogPath: "/l.log",
+	})
+	for _, want := range []string{"/opt/homebrew/bin", "/usr/local/bin"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("an empty PATH should fall back to the common install locations, missing %q", want)
+		}
 	}
 }

@@ -228,7 +228,14 @@ func runDaemonInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	plist := daemon.LaunchAgentPlist(bin, path, daemon.LogFilePath())
+	// Copy this shell's PATH into the agent. launchd's own PATH cannot find a
+	// Homebrew tmux, and a daemon that cannot see tmux reports an empty world.
+	plist := daemon.LaunchAgentPlist(daemon.LaunchAgentOptions{
+		BinPath:    bin,
+		ConfigPath: path,
+		LogPath:    daemon.LogFilePath(),
+		Path:       os.Getenv("PATH"),
+	})
 	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
 		return err
 	}

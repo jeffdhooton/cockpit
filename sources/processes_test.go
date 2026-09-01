@@ -3,8 +3,10 @@ package sources
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/jhoot/cockpit/config"
 )
@@ -45,7 +47,7 @@ func devRepo(procs ...config.ProcessConfig) config.RepoConfig {
 
 func TestReconcileStartsMissingAutoStartProcesses(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "0\tshell\t0\t111\t1\n1\tdev\t0\t222\t0\n",
+		"list-windows": "0|shell|0|111|1\n1|dev|0|222|0\n",
 	}}
 	repo := devRepo(
 		config.ProcessConfig{Name: "dev", Command: "npm run dev"},
@@ -66,7 +68,7 @@ func TestReconcileStartsMissingAutoStartProcesses(t *testing.T) {
 
 func TestReconcileRespawnsDeadWindow(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "0\tshell\t0\t111\t1\n1\tdev\t1\t222\t0\n",
+		"list-windows": "0|shell|0|111|1\n1|dev|1|222|0\n",
 	}}
 	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
 
@@ -82,7 +84,7 @@ func TestReconcileRespawnsDeadWindow(t *testing.T) {
 
 func TestReconcileSkipsNonAutoStart(t *testing.T) {
 	off := false
-	f := &fakeRunner{outputs: map[string]string{"list-windows": "0\tshell\t0\t111\t1\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-windows": "0|shell|0|111|1\n"}}
 	repo := devRepo(config.ProcessConfig{Name: "test", Command: "npm test", AutoStart: &off})
 
 	ReconcileProcesses(context.Background(), f, repo)
@@ -94,7 +96,7 @@ func TestReconcileSkipsNonAutoStart(t *testing.T) {
 
 func TestReconcileIsIdempotent(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "0\tshell\t0\t111\t1\n1\tdev\t0\t222\t0\n",
+		"list-windows": "0|shell|0|111|1\n1|dev|0|222|0\n",
 	}}
 	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
 
@@ -109,7 +111,7 @@ func TestReconcileIsIdempotent(t *testing.T) {
 
 func TestReconcileCollectsErrorsAndKeepsGoing(t *testing.T) {
 	f := &fakeRunner{
-		outputs: map[string]string{"list-windows": "0\tshell\t0\t111\t1\n"},
+		outputs: map[string]string{"list-windows": "0|shell|0|111|1\n"},
 		errs:    map[string]error{"new-window": errors.New("no server")},
 	}
 	repo := devRepo(
@@ -153,7 +155,7 @@ func TestStartProcessSurvivesRemainOnExitFailure(t *testing.T) {
 
 func TestInspectProcessesClassifiesState(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "0\tshell\t0\t111\t1\n1\tdev\t1\t222\t0\n2\tscratch\t0\t333\t0\n",
+		"list-windows": "0|shell|0|111|1\n1|dev|1|222|0\n2|scratch|0|333|0\n",
 	}}
 	repo := devRepo(
 		config.ProcessConfig{Name: "dev", Command: "npm run dev"},
@@ -243,7 +245,7 @@ func TestStopAndRestartProcess(t *testing.T) {
 
 func TestListSessionsUsesTheRunner(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-sessions": "app\t2\t1\t1700000000\ndocs\t1\t0\t1700000001\n",
+		"list-sessions": "app|2|1|1700000000\ndocs|1|0|1700000001\n",
 	}}
 
 	got, err := ListSessions(context.Background(), f)
@@ -267,5 +269,48 @@ func TestListSessionsWithoutAServer(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("want nil, got %+v", got)
+	}
+}
+
+func TestListSessionsDistinguishesMissingTmuxFromNoServer(t *testing.T) {
+	// "no tmux server" means nothing is running. "tmux is not installed" means
+	// we cannot know. Reporting the second as the first makes every answer a
+	// confident lie — which is exactly what happens under launchd, where the
+	// PATH does not include Homebrew.
+	missing := &fakeRunner{errs: map[string]error{
+		"list-sessions": fmt.Errorf("tmux list-sessions: %w", ErrTmuxNotFound),
+	}}
+	if _, err := ListSessions(context.Background(), missing); !errors.Is(err, ErrTmuxNotFound) {
+		t.Errorf("a missing tmux binary must surface, got err = %v", err)
+	}
+
+	noServer := &fakeRunner{errs: map[string]error{
+		"list-sessions": errors.New("no server running on /tmp/tmux-501/default"),
+	}}
+	got, err := ListSessions(context.Background(), noServer)
+	if err != nil {
+		t.Errorf("no server running is an answer, not a failure: %v", err)
+	}
+	if got != nil {
+		t.Errorf("want no sessions, got %+v", got)
+	}
+}
+
+func TestInspectProcessesSurfacesMissingTmux(t *testing.T) {
+	f := &fakeRunner{errs: map[string]error{
+		"list-windows": fmt.Errorf("tmux list-windows: %w", ErrTmuxNotFound),
+	}}
+	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "x"})
+
+	if _, err := InspectProcesses(context.Background(), f, repo); !errors.Is(err, ErrTmuxNotFound) {
+		t.Errorf("reporting every process as not_started because tmux is missing is a lie: err = %v", err)
+	}
+}
+
+func TestExecRunnerReportsMissingTmux(t *testing.T) {
+	r := ExecRunner{Binary: "tmux-definitely-not-installed", Timeout: 5 * time.Second}
+	_, err := r.Run(context.Background(), "list-sessions")
+	if !errors.Is(err, ErrTmuxNotFound) {
+		t.Errorf("want ErrTmuxNotFound, got %v", err)
 	}
 }

@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseTmuxOutput(t *testing.T) {
-	input := "dev\t3\t1\t1700000000\nserver\t1\t0\t1699990000\n"
+	input := "dev|3|1|1700000000\nserver|1|0|1699990000\n"
 	sessions, err := parseTmuxOutput(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -50,7 +50,7 @@ func TestParseTmuxOutputEmpty(t *testing.T) {
 
 func TestParseTmuxOutputMalformed(t *testing.T) {
 	// Lines with fewer than 4 fields should be skipped
-	input := "incomplete\t1\n"
+	input := "incomplete|1\n"
 	sessions, err := parseTmuxOutput(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

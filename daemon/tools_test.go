@@ -132,7 +132,7 @@ func TestUnknownProjectIsAnError(t *testing.T) {
 
 func TestListProcessesReportsState(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "0\tshell\t0\t111\t1\n1\tdev\t1\t222\t0\n",
+		"list-windows": "0|shell|0|111|1\n1|dev|1|222|0\n",
 	}}
 	tools := testTools(t, f, devApp(
 		config.ProcessConfig{Name: "dev", Command: "npm run dev"},
@@ -164,8 +164,8 @@ func TestListProcessesReportsState(t *testing.T) {
 
 func TestListProjectsSummarises(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-sessions": "app\t2\t1\t1700000000\n",
-		"list-windows":  "0\tshell\t0\t111\t1\n1\tdev\t0\t222\t0\n",
+		"list-sessions": "app|2|1|1700000000\n",
+		"list-windows":  "0|shell|0|111|1\n1|dev|0|222|0\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "npm run dev"}))
 
@@ -199,7 +199,7 @@ func TestListProjectsSummarises(t *testing.T) {
 func TestReadOutputRequestsRequestedLines(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
 		"capture-pane": "line one\nline two\n",
-		"list-windows": "1\tdev\t0\t222\t0\n",
+		"list-windows": "1|dev|0|222|0\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 
@@ -235,7 +235,7 @@ func TestReadOutputDefaultsAndClampsLines(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := &fakeRunner{outputs: map[string]string{"list-windows": "1\tdev\t0\t2\t0\n"}}
+			f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|2|0\n"}}
 			tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 			if _, err := tools.Call(context.Background(), "cockpit_read_output", tc.args); err != nil {
 				t.Fatal(err)
@@ -249,7 +249,7 @@ func TestReadOutputDefaultsAndClampsLines(t *testing.T) {
 
 func TestReadOutputAcceptsAnAdHocWindow(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tagent-ab12\t0\t222\t0\n",
+		"list-windows": "1|agent-ab12|0|222|0\n",
 		"capture-pane": "hello from the agent\n",
 	}}
 	tools := testTools(t, f, devApp())
@@ -270,7 +270,7 @@ func TestReadOutputAcceptsAnAdHocWindow(t *testing.T) {
 }
 
 func TestReadOutputRejectsAWindowThatDoesNotExist(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-windows": "0\tshell\t0\t1\t1\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-windows": "0|shell|0|1|1\n"}}
 	tools := testTools(t, f, devApp())
 
 	if _, err := tools.Call(context.Background(), "cockpit_read_output",
@@ -280,7 +280,7 @@ func TestReadOutputRejectsAWindowThatDoesNotExist(t *testing.T) {
 }
 
 func TestWhoamiIdentifiesTheDaemon(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-sessions": "app\t1\t0\t1700000000\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-sessions": "app|1|0|1700000000\n"}}
 	tools := testTools(t, f, devApp())
 
 	got, err := tools.Call(context.Background(), "cockpit_whoami", nil)
@@ -314,7 +314,7 @@ func TestWhoamiIdentifiesTheDaemon(t *testing.T) {
 
 func TestStatusMatchesConfiguredPatterns(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\n",
+		"list-windows": "1|dev|0|222|0\n",
 		"capture-pane": "booting\nLocal:   http://localhost:5173\nerror: something broke\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{
@@ -360,7 +360,7 @@ func TestStatusMatchesConfiguredPatterns(t *testing.T) {
 
 func TestStatusIsEmptyWithoutPatterns(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\n",
+		"list-windows": "1|dev|0|222|0\n",
 		"capture-pane": "lots of output\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
@@ -383,7 +383,7 @@ func TestStatusIsEmptyWithoutPatterns(t *testing.T) {
 
 func TestStatusRespectsLimit(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\n",
+		"list-windows": "1|dev|0|222|0\n",
 		"capture-pane": "error one\nerror two\nerror three\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{
@@ -420,7 +420,7 @@ func TestGitStatusRejectsUnknownProject(t *testing.T) {
 func TestSignalsIncludesDeadProcesses(t *testing.T) {
 	f := &fakeRunner{
 		outputs: map[string]string{
-			"list-windows":  "1\tdev\t1\t222\t0\n",
+			"list-windows":  "1|dev|1|222|0\n",
 			"list-sessions": "",
 		},
 		errs: map[string]error{"list-sessions": errors.New("no server")},
@@ -471,7 +471,7 @@ func TestReadOutputCollapsesPanePadding(t *testing.T) {
 	// tmux pads a pane to its full height, so a one-line crash comes back
 	// buried in blank lines the caller has to pay for.
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t1\t222\t0\n",
+		"list-windows": "1|dev|1|222|0\n",
 		"capture-pane": "fatal: on fire\n" + strings.Repeat("\n", 40) + "Pane is dead\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
@@ -501,7 +501,7 @@ func TestReadOutputReportsWhatItDropped(t *testing.T) {
 	// Forty lines of tmux pane padding get collapsed away. Saying so turns a
 	// silently edited transcript into an honest one.
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"list-windows": "1|dev|0|222|0|\n",
 		"capture-pane": "first\n" + strings.Repeat("\n", 40) + "last\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
@@ -534,7 +534,7 @@ func TestReadOutputReportsTruncation(t *testing.T) {
 	// The capture filled the requested scrollback, so older output exists that
 	// the caller did not see.
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"list-windows": "1|dev|0|222|0|\n",
 		"capture-pane": strings.Repeat("line\n", 10),
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
@@ -556,7 +556,7 @@ func TestReadOutputReportsTruncation(t *testing.T) {
 
 func TestStatusReportsOmittedEvents(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"list-windows": "1|dev|0|222|0|\n",
 		"capture-pane": "error one\nerror two\nerror three\nerror four\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{
@@ -590,7 +590,7 @@ func TestStatusReportsOmittedEvents(t *testing.T) {
 
 func TestStatusOmittedIsZeroWhenEverythingFits(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "1\tdev\t0\t222\t0\t\n",
+		"list-windows": "1|dev|0|222|0|\n",
 		"capture-pane": "error one\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{

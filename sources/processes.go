@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jhoot/cockpit/config"
@@ -32,6 +33,11 @@ type ProcessInfo struct {
 func ListSessions(ctx context.Context, r Runner) ([]TmuxSession, error) {
 	out, err := r.Run(ctx, ListSessionsArgs()...)
 	if err != nil {
+		// A missing binary means we cannot know. Anything else here is the
+		// server not running, which is an answer.
+		if errors.Is(err, ErrTmuxNotFound) {
+			return nil, err
+		}
 		return nil, nil
 	}
 	return parseTmuxOutput(out)
@@ -71,6 +77,12 @@ func EnsureSession(ctx context.Context, r Runner, repo config.RepoConfig) (bool,
 func InspectProcesses(ctx context.Context, r Runner, repo config.RepoConfig) ([]ProcessInfo, error) {
 	windows, err := ListWindows(ctx, r, repo.Label)
 	if err != nil {
+		// A session that does not exist yet is fine — nothing is running. A
+		// missing tmux is not: every process would be reported as not started,
+		// which is a confident lie.
+		if errors.Is(err, ErrTmuxNotFound) {
+			return nil, err
+		}
 		windows = nil
 	}
 

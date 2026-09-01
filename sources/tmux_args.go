@@ -9,10 +9,20 @@ import (
 )
 
 // windowFormat is the list-windows format string ParseWindows expects.
-const windowFormat = "#{window_index}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{window_active}\t#{pane_dead_status}"
+// fieldSep separates format fields. It must be printable: tmux replaces
+// non-printable characters such as tab with "_" whenever the environment has
+// no UTF-8 locale, and a launch agent inherits no locale at all. A tab
+// separator therefore parsed fine from a shell and silently produced nothing
+// at login.
+//
+// Names may legitimately contain this character, so the parsers anchor on the
+// fixed numeric fields around the name rather than on the field count.
+const fieldSep = "|"
+
+const windowFormat = "#{window_index}|#{window_name}|#{pane_dead}|#{pane_pid}|#{window_active}|#{pane_dead_status}"
 
 // sessionFormat is the list-sessions format string parseTmuxOutput expects.
-const sessionFormat = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_last_attached}"
+const sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_last_attached}"
 
 // Window is one tmux window in a session.
 type Window struct {
@@ -120,23 +130,40 @@ func ParseWindows(out string) []Window {
 
 	var windows []Window
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.Split(strings.TrimSpace(line), "\t")
+		parts := strings.Split(strings.TrimSpace(line), fieldSep)
 		if len(parts) < 5 {
 			continue
 		}
-		index, _ := strconv.Atoi(parts[0])
-		pid, _ := strconv.Atoi(parts[3])
-		// A live pane reports an empty status, and older tmux omits the field.
-		deadStatus := 0
-		if len(parts) > 5 {
-			deadStatus, _ = strconv.Atoi(parts[5])
+
+		// Layout is index | name | dead | pid | active | dead_status, and the
+		// name may contain the separator. Anchor on the fixed fields at each
+		// end and treat everything between as the name.
+		trailing := 4
+		if len(parts) == 5 {
+			// Older tmux without pane_dead_status.
+			trailing = 3
 		}
+		nameEnd := len(parts) - trailing
+		if nameEnd < 1 {
+			continue
+		}
+
+		index, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		pid, _ := strconv.Atoi(parts[nameEnd+1])
+		deadStatus := 0
+		if trailing == 4 {
+			deadStatus, _ = strconv.Atoi(parts[nameEnd+3])
+		}
+
 		windows = append(windows, Window{
 			Index:      index,
-			Name:       parts[1],
-			Dead:       parts[2] == "1",
+			Name:       strings.Join(parts[1:nameEnd], fieldSep),
+			Dead:       parts[nameEnd] == "1",
 			PanePID:    pid,
-			Active:     parts[4] == "1",
+			Active:     parts[nameEnd+2] == "1",
 			DeadStatus: deadStatus,
 		})
 	}

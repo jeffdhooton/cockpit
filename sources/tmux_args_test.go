@@ -128,7 +128,7 @@ func TestTarget(t *testing.T) {
 }
 
 func TestParseWindows(t *testing.T) {
-	out := "0\tshell\t0\t111\t1\n1\tdev\t1\t222\t0\n"
+	out := "0|shell|0|111|1\n1|dev|1|222|0\n"
 	got := ParseWindows(out)
 	if len(got) != 2 {
 		t.Fatalf("want 2 windows, got %d", len(got))
@@ -148,7 +148,7 @@ func TestParseWindowsEmpty(t *testing.T) {
 }
 
 func TestParseWindowsSkipsMalformedLines(t *testing.T) {
-	out := "garbage\n1\tdev\t0\t222\t0\n"
+	out := "garbage\n1|dev|0|222|0\n"
 	got := ParseWindows(out)
 	if len(got) != 1 || got[0].Name != "dev" {
 		t.Errorf("malformed lines should be skipped, got %+v", got)
@@ -158,7 +158,7 @@ func TestParseWindowsSkipsMalformedLines(t *testing.T) {
 func TestParseWindowsReadsDeadStatus(t *testing.T) {
 	// The exit status is what turns "it died" into "it could not find the
 	// command", so a receipt can name the reason.
-	out := "1\tghost\t1\t222\t0\t127\n"
+	out := "1|ghost|1|222|0|127\n"
 	got := ParseWindows(out)
 	if len(got) != 1 {
 		t.Fatalf("want 1 window, got %d", len(got))
@@ -172,12 +172,57 @@ func TestParseWindowsToleratesMissingDeadStatus(t *testing.T) {
 	// A live window reports an empty dead status, and older tmux may omit the
 	// field entirely. Neither should drop the window.
 	for _, line := range []string{
-		"1\tdev\t0\t222\t1\t\n",
-		"1\tdev\t0\t222\t1\n",
+		"1|dev|0|222|1|\n",
+		"1|dev|0|222|1\n",
 	} {
 		got := ParseWindows(line)
 		if len(got) != 1 || got[0].Name != "dev" || got[0].DeadStatus != 0 {
 			t.Errorf("line %q parsed to %+v", line, got)
 		}
+	}
+}
+
+func TestFormatsAvoidTabSeparators(t *testing.T) {
+	// tmux replaces a tab with "_" when the environment has no UTF-8 locale.
+	// launchd supplies no locale at all, so a tab-separated format silently
+	// became unparseable exactly when the daemon started at login:
+	//
+	//   full env: b u i l d | 1
+	//   env -i:   b u i l d  _  1
+	//
+	// The separator must survive any locale, so it has to be printable.
+	for name, format := range map[string]string{
+		"windowFormat":  windowFormat,
+		"sessionFormat": sessionFormat,
+	} {
+		if strings.Contains(format, "\t") {
+			t.Errorf("%s still uses a tab: %q", name, format)
+		}
+	}
+}
+
+func TestParseWindowsHandlesSeparatorInWindowName(t *testing.T) {
+	// A window name is free-form, so it may contain the separator. The numeric
+	// fields around it are fixed, so anchor to those rather than to the count.
+	got := ParseWindows("3|weird|name|0|444|1|\n")
+	if len(got) != 1 {
+		t.Fatalf("want 1 window, got %d", len(got))
+	}
+	w := got[0]
+	if w.Index != 3 || w.Name != "weird|name" || w.Dead || w.PanePID != 444 || !w.Active {
+		t.Errorf("got %+v, want index 3 named %q", w, "weird|name")
+	}
+}
+
+func TestParseTmuxOutputHandlesSeparatorInSessionName(t *testing.T) {
+	got, err := parseTmuxOutput("od|d|name|2|1|1700000000\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 session, got %d", len(got))
+	}
+	if got[0].Name != "od|d|name" || got[0].Windows != 2 || !got[0].Attached {
+		t.Errorf("got %+v", got[0])
 	}
 }
