@@ -58,6 +58,10 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(capCmd)
 	rootCmd.AddCommand(versionCmd)
+
+	hookStatusCmd.Flags().StringVar(&hookEngine, "engine", "claude", "reporting engine: claude or codex")
+	hookCmd.AddCommand(hookStatusCmd)
+	rootCmd.AddCommand(hookCmd)
 }
 
 func Execute() {
