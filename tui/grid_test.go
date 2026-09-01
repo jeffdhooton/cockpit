@@ -489,3 +489,91 @@ func TestGridSearchKeyOpensOverlay(t *testing.T) {
 		t.Errorf("/ should enter search mode, mode = %v", m.mode)
 	}
 }
+
+func TestProcessIndicator(t *testing.T) {
+	cases := []struct {
+		name  string
+		infos []sources.ProcessInfo
+		want  string
+	}{
+		{"none", nil, ""},
+		{"all running", []sources.ProcessInfo{
+			{Name: "dev", State: sources.ProcessRunning, Configured: true},
+		}, "⚙ 1/1"},
+		{"one dead", []sources.ProcessInfo{
+			{Name: "dev", State: sources.ProcessRunning, Configured: true},
+			{Name: "test", State: sources.ProcessDead, Configured: true},
+		}, "⚙ 1/2"},
+		{"not started counts against the total", []sources.ProcessInfo{
+			{Name: "dev", State: sources.ProcessNotStarted, Configured: true},
+		}, "⚙ 0/1"},
+		{"unconfigured windows ignored", []sources.ProcessInfo{
+			{Name: "shell", State: sources.ProcessRunning, Configured: false},
+		}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := processIndicator(tc.infos); got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProcessIndicatorDegraded(t *testing.T) {
+	dead := []sources.ProcessInfo{{Name: "dev", State: sources.ProcessDead, Configured: true}}
+	if !processIndicatorDegraded(dead) {
+		t.Error("a dead process must mark the tile degraded")
+	}
+	healthy := []sources.ProcessInfo{{Name: "dev", State: sources.ProcessRunning, Configured: true}}
+	if processIndicatorDegraded(healthy) {
+		t.Error("a running process is not degraded")
+	}
+	notStarted := []sources.ProcessInfo{{Name: "dev", State: sources.ProcessNotStarted, Configured: true}}
+	if processIndicatorDegraded(notStarted) {
+		t.Error("a process that was never started is idle, not degraded")
+	}
+}
+
+func TestAttachProcesses(t *testing.T) {
+	targets := []Target{{Label: "app"}, {Label: "other"}}
+	byLabel := map[string][]sources.ProcessInfo{
+		"app": {{Name: "dev", State: sources.ProcessRunning, Configured: true}},
+	}
+	got := AttachProcesses(targets, byLabel)
+	if len(got[0].Processes) != 1 {
+		t.Errorf("app should carry its processes: %+v", got[0])
+	}
+	if got[1].Processes != nil {
+		t.Errorf("a target with no processes should stay empty: %+v", got[1])
+	}
+}
+
+func TestRenderTileShowsProcessIndicator(t *testing.T) {
+	target := Target{
+		Label:   "app",
+		Session: &sources.TmuxSession{Name: "app"},
+		Processes: []sources.ProcessInfo{
+			{Name: "dev", State: sources.ProcessRunning, Configured: true},
+		},
+	}
+	out := renderTile(target, 24, false)
+	if !strings.Contains(out, "⚙") {
+		t.Errorf("a wide tile should show the process indicator:\n%s", out)
+	}
+}
+
+func TestRenderTileKeepsHeightWithProcesses(t *testing.T) {
+	target := Target{
+		Label:   "app",
+		Session: &sources.TmuxSession{Name: "app"},
+		Repo:    &sources.GitRepoStatus{Label: "app", Branch: "main"},
+		Processes: []sources.ProcessInfo{
+			{Name: "dev", State: sources.ProcessDead, Configured: true},
+		},
+	}
+	out := renderTile(target, 18, false)
+	if got := lipgloss.Height(out); got != gridTileH {
+		t.Errorf("tile height = %d, want %d — the indicator must not add a line:\n%s", got, gridTileH, out)
+	}
+}

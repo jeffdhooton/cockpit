@@ -184,6 +184,7 @@ type Model struct {
 	inbox          InboxModel
 	viz            VizModel
 	github         *sources.GitHubStatus
+	processes      map[string][]sources.ProcessInfo // repo label → configured process state
 	sessionPreview string
 	lastPreviewSession string
 
@@ -242,6 +243,7 @@ type (
 	tasksDataMsg   struct{ Tasks []sources.Task }
 	inboxDataMsg   struct{ Items []sources.Task }
 	githubDataMsg    struct{ Status *sources.GitHubStatus }
+	processDataMsg   struct{ ByLabel map[string][]sources.ProcessInfo }
 	sourceErrMsg     struct{ Source string; Err error }
 	previewDataMsg      struct{ Content string; Session string }
 	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
@@ -259,6 +261,7 @@ func (m Model) Init() tea.Cmd {
 		m.fetchTasks(),
 		m.fetchInbox(),
 		m.fetchGitHub(),
+		m.fetchProcesses(),
 		m.localTick(),
 		m.remoteTick(),
 		m.vizTick(),
@@ -341,6 +344,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case githubDataMsg:
 		m.github = msg.Status
 
+	case processDataMsg:
+		m.processes = msg.ByLabel
+
 	case sourceErrMsg:
 		m.transientErr = "⚠ " + msg.Source + ": " + msg.Err.Error()
 		m.transientTimer = 3
@@ -375,6 +381,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchGit(),
 			m.fetchTasks(),
 			m.fetchInbox(),
+			m.fetchProcesses(),
 			m.localTick(),
 		)
 
@@ -690,7 +697,7 @@ func (m *Model) newSessionLaunch(save bool) tea.Cmd {
 	}
 
 	cmds = append(cmds, func() tea.Msg {
-		err := tmuxJump(label, path)
+		err := tmuxJumpRepo(repo)
 		return tmuxSwitchResultMsg{Err: err}
 	})
 
@@ -766,9 +773,10 @@ func (m *Model) handleEnter() tea.Cmd {
 		}
 	case PanelRepos:
 		if len(m.repos.Repos) > 0 {
-			repo := m.repos.Repos[m.repos.Cursor]
+			r := m.repos.Repos[m.repos.Cursor]
+			repo := m.repoForLabel(r.Label, r.Path)
 			return func() tea.Msg {
-				err := tmuxJump(repo.Label, repo.Path)
+				err := tmuxJumpRepo(repo)
 				return tmuxSwitchResultMsg{Err: err}
 			}
 		}
@@ -1013,6 +1021,34 @@ func (m Model) fetchGitHub() tea.Cmd {
 	}
 }
 
+// fetchProcesses polls window state for every repo that declares processes.
+// Repos without processes are skipped so the poll costs nothing for users who
+// never configured any.
+func (m Model) fetchProcesses() tea.Cmd {
+	var repos []config.RepoConfig
+	for _, r := range m.config.Repos {
+		if len(r.Processes) > 0 {
+			repos = append(repos, r)
+		}
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx := context.Background()
+		r := sources.DefaultRunner()
+		byLabel := make(map[string][]sources.ProcessInfo, len(repos))
+		for _, repo := range repos {
+			infos, err := sources.InspectProcesses(ctx, r, repo)
+			if err != nil {
+				continue
+			}
+			byLabel[repo.Label] = infos
+		}
+		return processDataMsg{ByLabel: byLabel}
+	}
+}
+
 func (m Model) localTick() tea.Cmd {
 	d := time.Duration(m.config.General.RefreshInterval) * time.Second
 	return tea.Tick(d, func(time.Time) tea.Msg { return localTickMsg{} })
@@ -1246,18 +1282,41 @@ func tmuxSwitch(name string) error {
 	return exec.Command("tmux", "switch-client", "-t", name).Run()
 }
 
-// tmuxJump switches to or creates a tmux session for a repo.
-func tmuxJump(label, path string) error {
-	if !validLabel.MatchString(label) {
-		return fmt.Errorf("invalid session label %q: must be alphanumeric, hyphens, or underscores", label)
+// tmuxJumpRepo switches to a repo's tmux session, creating it if needed and
+// bringing its configured processes up as sibling windows.
+//
+// Window 0 stays a plain shell and is what you land on, so a project with a
+// noisy dev server does not drop you into a log.
+func tmuxJumpRepo(repo config.RepoConfig) error {
+	if !validLabel.MatchString(repo.Label) {
+		return fmt.Errorf("invalid session label %q: must be alphanumeric, hyphens, or underscores", repo.Label)
 	}
-	// Try switching first
-	if err := exec.Command("tmux", "switch-client", "-t", label).Run(); err == nil {
-		return nil
-	}
-	// Create session then switch
-	if err := exec.Command("tmux", "new-session", "-d", "-s", label, "-c", path).Run(); err != nil {
+
+	ctx := context.Background()
+	r := sources.DefaultRunner()
+
+	created, err := sources.EnsureSession(ctx, r, repo)
+	if err != nil {
 		return err
 	}
-	return exec.Command("tmux", "switch-client", "-t", label).Run()
+
+	// A process that fails to launch is worth knowing about, but it must never
+	// stand between the user and the session they asked for.
+	_ = sources.ReconcileProcesses(ctx, r, repo)
+
+	if created {
+		_, _ = r.Run(ctx, sources.SelectWindowArgs(repo.Label, 0)...)
+	}
+	return exec.Command("tmux", "switch-client", "-t", repo.Label).Run()
+}
+
+// repoForLabel resolves a jump target to its configured repo, falling back to
+// a bare repo so sessions cockpit does not manage stay jumpable.
+func (m Model) repoForLabel(label, path string) config.RepoConfig {
+	if m.config != nil {
+		if repo, ok := m.config.Repo(label); ok {
+			return repo
+		}
+	}
+	return config.RepoConfig{Label: label, Path: path}
 }

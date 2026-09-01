@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -220,5 +221,36 @@ func keyMsg(key string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEscape}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+	}
+}
+
+func TestTmuxJumpRepoRejectsInvalidLabel(t *testing.T) {
+	err := tmuxJumpRepo(config.RepoConfig{Label: "my app; rm -rf /", Path: "/tmp"})
+	if err == nil {
+		t.Fatal("an unsafe label must be rejected before it reaches tmux")
+	}
+	if !strings.Contains(err.Error(), "invalid session label") {
+		t.Errorf("error = %q", err.Error())
+	}
+}
+
+func TestRepoForLabelUsesConfiguredProcesses(t *testing.T) {
+	m := Model{config: &config.Config{Repos: []config.RepoConfig{{
+		Label:     "app",
+		Path:      "/tmp/app",
+		Processes: []config.ProcessConfig{{Name: "dev", Command: "npm run dev"}},
+	}}}}
+
+	got := m.repoForLabel("app", "/tmp/app")
+	if len(got.Processes) != 1 {
+		t.Errorf("a configured repo should bring its processes: %+v", got)
+	}
+
+	unknown := m.repoForLabel("ghost", "/tmp/ghost")
+	if unknown.Label != "ghost" || unknown.Path != "/tmp/ghost" {
+		t.Errorf("an unconfigured session should still be jumpable: %+v", unknown)
+	}
+	if len(unknown.Processes) != 0 {
+		t.Errorf("an unconfigured session has no processes: %+v", unknown)
 	}
 }

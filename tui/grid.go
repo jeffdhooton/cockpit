@@ -14,14 +14,58 @@ import (
 // session, or both joined on session.Name == repo.Label — the same identity
 // tmuxJump already assumes when it switches to a session named for a repo.
 type Target struct {
-	Label   string
-	Session *sources.TmuxSession
-	Repo    *sources.GitRepoStatus
-	Status  sources.ClaudeStatus
+	Label     string
+	Session   *sources.TmuxSession
+	Repo      *sources.GitRepoStatus
+	Status    sources.ClaudeStatus
+	Processes []sources.ProcessInfo
 }
 
 // Running reports whether the target has a live tmux session behind it.
 func (t Target) Running() bool { return t.Session != nil }
+
+// AttachProcesses joins per-repo process state onto the tiles. It is separate
+// from BuildTargets because process data arrives on its own poll and should
+// never delay the grid.
+func AttachProcesses(targets []Target, byLabel map[string][]sources.ProcessInfo) []Target {
+	for i := range targets {
+		if infos, ok := byLabel[targets[i].Label]; ok {
+			targets[i].Processes = infos
+		}
+	}
+	return targets
+}
+
+// processIndicator renders the live/configured process count for a tile,
+// counting only processes the config declares. Ad-hoc windows the user opened
+// are not the tile's business.
+func processIndicator(infos []sources.ProcessInfo) string {
+	total, running := 0, 0
+	for _, i := range infos {
+		if !i.Configured {
+			continue
+		}
+		total++
+		if i.State == sources.ProcessRunning {
+			running++
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	return fmt.Sprintf("⚙ %d/%d", running, total)
+}
+
+// processIndicatorDegraded reports whether any configured process died. A
+// process that was never started is idle, not broken.
+func processIndicatorDegraded(infos []sources.ProcessInfo) bool {
+	for _, i := range infos {
+		if i.Configured && i.State == sources.ProcessDead {
+			return true
+		}
+	}
+	return false
+}
 
 // BuildTargets joins sessions and repos into one ordered tile list. Running
 // targets come first, then dormant, alphabetical within each group. Ordering is
@@ -197,6 +241,21 @@ func renderTile(t Target, width int, selected bool) string {
 		}
 	}
 
+	// The tile has a fixed 3-line budget, so the indicator shares the git line
+	// and is dropped rather than wrapped when it will not fit.
+	if ind := processIndicator(t.Processes); ind != "" {
+		style := MutedText
+		if processIndicatorDegraded(t.Processes) {
+			style = WarningText
+		}
+		switch {
+		case git == "":
+			git = style.Render(ind)
+		case lipgloss.Width(git)+1+lipgloss.Width(ind) <= inner:
+			git += " " + style.Render(ind)
+		}
+	}
+
 	borderColor := ColorBorder
 	if selected {
 		borderColor = ColorAccent
@@ -301,7 +360,8 @@ func (m Model) gridContentWidth() int {
 
 // gridTargets builds the current tile list from live sessions and configured repos.
 func (m Model) gridTargets() []Target {
-	return BuildTargets(m.sessions.Sessions, m.repos.Repos, m.sessions.Statuses, m.config.General.SessionName)
+	targets := BuildTargets(m.sessions.Sessions, m.repos.Repos, m.sessions.Statuses, m.config.General.SessionName)
+	return AttachProcesses(targets, m.processes)
 }
 
 // gridView renders the unified grid, plus the session preview on desktop widths.
@@ -388,6 +448,13 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 		return nil
 	}
 	t := targets[idx]
+
+	// A configured repo goes through the full jump even when its session is
+	// already up, so processes that died or were never started come back.
+	if _, configured := m.config.Repo(t.Label); configured {
+		repo := m.repoForLabel(t.Label, "")
+		return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
+	}
 	if t.Running() {
 		name := t.Label
 		return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxSwitch(name)} }
@@ -395,8 +462,8 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	if t.Repo == nil {
 		return nil
 	}
-	label, path := t.Label, t.Repo.Path
-	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJump(label, path)} }
+	repo := m.repoForLabel(t.Label, t.Repo.Path)
+	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
 }
 
 // handleGridKey is the grid view's key surface. It is deliberately narrower than
