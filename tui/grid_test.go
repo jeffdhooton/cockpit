@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jhoot/cockpit/sources"
 )
 
@@ -187,5 +189,81 @@ func TestResolveGridCursorVanishedLabelClamps(t *testing.T) {
 	}
 	if got := resolveGridCursor(nil, "gone", 3); got != 0 {
 		t.Errorf("resolveGridCursor on empty targets = %d, want 0", got)
+	}
+}
+
+func TestRenderGridFitsWidth(t *testing.T) {
+	targets := BuildTargets(
+		[]sources.TmuxSession{sess("my-app"), sess("cockpit-ui"), sess("a-very-long-session-name-here")},
+		[]sources.GitRepoStatus{repo("dotfiles"), repo("side-project")},
+		nil, "cockpit",
+	)
+	for _, width := range []int{40, 55, 120} {
+		out := RenderGrid(targets, 0, width, 20)
+		for i, line := range strings.Split(out, "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width=%d: line %d is %d cells wide: %q", width, i, w, line)
+			}
+		}
+	}
+}
+
+func TestRenderGridHandlesOddAndEmptyCounts(t *testing.T) {
+	for _, n := range []int{0, 1, 3} {
+		var sessions []sources.TmuxSession
+		for i := 0; i < n; i++ {
+			sessions = append(sessions, sess(string(rune('a'+i))))
+		}
+		targets := BuildTargets(sessions, nil, nil, "cockpit")
+		out := RenderGrid(targets, 0, 44, 20) // must not panic
+		if out == "" {
+			t.Errorf("n=%d: RenderGrid returned empty string", n)
+		}
+	}
+}
+
+func TestRenderGridShowsMoreIndicatorWhenClipped(t *testing.T) {
+	var sessions []sources.TmuxSession
+	for i := 0; i < 12; i++ {
+		sessions = append(sessions, sess("s"+string(rune('a'+i))))
+	}
+	targets := BuildTargets(sessions, nil, nil, "cockpit")
+	// height 10 fits 2 rows of 2 columns = 4 tiles, leaving 8 hidden.
+	out := RenderGrid(targets, 0, 44, 10)
+	if !strings.Contains(out, "more") {
+		t.Errorf("clipped grid should show a 'more' indicator, got:\n%s", out)
+	}
+}
+
+func TestRenderGridScrollsToKeepCursorVisible(t *testing.T) {
+	var sessions []sources.TmuxSession
+	for i := 0; i < 12; i++ {
+		sessions = append(sessions, sess("s"+string(rune('a'+i))))
+	}
+	targets := BuildTargets(sessions, nil, nil, "cockpit")
+	last := len(targets) - 1
+	out := RenderGrid(targets, last, 44, 10)
+	if !strings.Contains(out, targets[last].Label) {
+		t.Errorf("selected target %q not visible in clipped grid:\n%s", targets[last].Label, out)
+	}
+}
+
+func TestRenderTileShowsGitStateForDormantRepo(t *testing.T) {
+	r := repo("dotfiles")
+	r.Branch = "main"
+	r.Dirty = true
+	r.DirtyCount = 3
+	targets := BuildTargets(nil, []sources.GitRepoStatus{r}, nil, "cockpit")
+	out := renderTile(targets[0], 22, false)
+	if !strings.Contains(out, "main") {
+		t.Errorf("dormant tile should show its branch, got:\n%s", out)
+	}
+}
+
+func TestRenderTileHeight(t *testing.T) {
+	targets := BuildTargets([]sources.TmuxSession{sess("my-app")}, nil, nil, "cockpit")
+	out := renderTile(targets[0], 22, true)
+	if got := len(strings.Split(out, "\n")); got != gridTileH {
+		t.Errorf("tile height = %d lines, want %d", got, gridTileH)
 	}
 }

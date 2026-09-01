@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jhoot/cockpit/sources"
 )
 
@@ -131,4 +134,120 @@ func resolveGridCursor(targets []Target, label string, prev int) int {
 		return len(targets) - 1
 	}
 	return prev
+}
+
+// renderTile draws one target: label, status, and git state. Every piece is
+// truncated to the inner width before styling, so the tile can never wrap and
+// blow its 3-line content budget.
+func renderTile(t Target, width int, selected bool) string {
+	inner := width - 4 // 2 border cells + 2 padding cells
+	if inner < 6 {
+		inner = 6
+	}
+
+	nameStyle := BoldText
+	switch {
+	case selected:
+		nameStyle = BoldText.Foreground(ColorAccent)
+	case !t.Running():
+		nameStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	}
+	name := nameStyle.Render(Truncate(t.Label, inner))
+
+	status := StatusDot("no session", VariantMuted)
+	if t.Running() {
+		status = StatusDot("detached", VariantMuted)
+		if t.Session.Attached {
+			status = StatusDot("attached", VariantAccent)
+		}
+		switch t.Status {
+		case sources.ClaudeStatusIdle:
+			label := "idle"
+			if age := formatIdleTime(t.Session.LastUsed); age != "" {
+				label = "idle " + age
+			}
+			status = StatusDot(Truncate(label, inner-2), VariantMuted)
+		case sources.ClaudeStatusWorking:
+			status = StatusDot("working", VariantAccent)
+		}
+	}
+
+	git := ""
+	if t.Repo != nil {
+		if t.Repo.Error != nil {
+			git = WarningText.Render("git err")
+		} else {
+			// Reserve room for the trailing markers before truncating the branch.
+			branchW := inner - 6
+			if branchW < 3 {
+				branchW = 3
+			}
+			git = PurpleText.Render(Truncate(t.Repo.Branch, branchW))
+			if t.Repo.Dirty {
+				git += " " + StatusDirty.Render(fmt.Sprintf("✗%d", t.Repo.DirtyCount))
+			} else {
+				git += " " + StatusClean.Render("✓")
+			}
+			if t.Repo.Unpushed > 0 && lipgloss.Width(git)+3 <= inner {
+				git += " " + StatusUnpushed.Render(fmt.Sprintf("↑%d", t.Repo.Unpushed))
+			}
+		}
+	}
+
+	borderColor := ColorBorder
+	if selected {
+		borderColor = ColorAccent
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1).
+		Width(inner).
+		Height(3).
+		MaxHeight(gridTileH).
+		Render(name + "\n" + status + "\n" + git)
+}
+
+// RenderGrid lays targets out in a responsive grid, scrolling by row to keep the
+// cursor visible and appending a muted count when tiles are clipped.
+func RenderGrid(targets []Target, cursor, width, height int) string {
+	if len(targets) == 0 {
+		return MutedText.Render("No sessions or repos. Add repos in ") +
+			AccentText.Render("~/.config/cockpit/config.toml")
+	}
+
+	cols := GridCols(width)
+	cellW := width / cols
+	rows := (len(targets) + cols - 1) / cols
+
+	visibleRows := height / gridTileH
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+
+	offset := 0
+	if cursorRow := cursor / cols; cursorRow >= visibleRows {
+		offset = cursorRow - visibleRows + 1
+	}
+
+	var out []string
+	for r := offset; r < rows && r < offset+visibleRows; r++ {
+		var cells []string
+		for c := 0; c < cols; c++ {
+			i := r*cols + c
+			if i >= len(targets) {
+				cells = append(cells, lipgloss.NewStyle().Width(cellW).Height(gridTileH).Render(""))
+				continue
+			}
+			cells = append(cells, renderTile(targets[i], cellW, i == cursor))
+		}
+		out = append(out, lipgloss.JoinHorizontal(lipgloss.Top, cells...))
+	}
+
+	if shown := (offset + visibleRows) * cols; shown < len(targets) {
+		out = append(out, MutedText.Render(fmt.Sprintf("  ▼ %d more", len(targets)-shown)))
+	}
+
+	return strings.Join(out, "\n")
 }
