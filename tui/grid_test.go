@@ -104,18 +104,56 @@ func TestBuildTargetsEmpty(t *testing.T) {
 	}
 }
 
+// GridCols measures against the grid's content width, not the terminal width.
 func TestGridCols(t *testing.T) {
-	cases := []struct{ width, want int }{
-		{30, 1},  // very narrow phone pane
-		{44, 2},  // Termius vertical
-		{70, 3},
-		{120, 4}, // capped
-		{200, 4}, // capped
+	cases := []struct{ contentWidth, want int }{
+		{20, 1},  // 24-col terminal, the narrow floor
+		{40, 2},  // 44-col terminal, Termius vertical
+		{66, 3},  // 70-col terminal
+		{116, 4}, // 120-col terminal, capped
+		{196, 4}, // 200-col terminal, capped
 	}
 	for _, c := range cases {
-		if got := GridCols(c.width); got != c.want {
-			t.Errorf("GridCols(%d) = %d, want %d", c.width, got, c.want)
+		if got := GridCols(c.contentWidth); got != c.want {
+			t.Errorf("GridCols(%d) = %d, want %d", c.contentWidth, got, c.want)
 		}
+	}
+}
+
+// A keypress must move by the same number of columns the eye sees. These two
+// read the column count from different call sites, and drifted apart once.
+func TestRenderAndKeysAgreeOnColumnCount(t *testing.T) {
+	for _, width := range []int{44, 70, 120} {
+		m := gridTestModel(width, 40)
+		m.sessions.Sessions = []sources.TmuxSession{
+			sess("aa"), sess("bb"), sess("cc"), sess("dd"), sess("ee"), sess("ff"),
+		}
+		m.repos.Repos = nil
+		targets := m.gridTargets()
+
+		// Columns the renderer actually drew, counted as tiles on the first row.
+		firstRow := strings.Split(RenderGrid(targets, 0, m.gridContentWidth(), 40), "\n")[0]
+		drawn := strings.Count(firstRow, "╭")
+
+		// Columns a single `j` moves by.
+		m.setGridCursor(targets, 0)
+		m.handleGridKey(keyMsg("j"))
+		moved := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+
+		if drawn != moved {
+			t.Errorf("width=%d: renderer drew %d columns but `j` moved %d",
+				width, drawn, moved)
+		}
+	}
+}
+
+func TestGridIsTwoWideAtPhoneWidth(t *testing.T) {
+	m := gridTestModel(44, 24)
+	m.sessions.Sessions = []sources.TmuxSession{sess("aa"), sess("bb"), sess("cc"), sess("dd")}
+	m.repos.Repos = nil
+	firstRow := strings.Split(RenderGrid(m.gridTargets(), 0, m.gridContentWidth(), 20), "\n")[0]
+	if got := strings.Count(firstRow, "╭"); got != 2 {
+		t.Errorf("44-col terminal drew %d tiles per row, want 2:\n%s", got, firstRow)
 	}
 }
 
@@ -257,6 +295,20 @@ func TestRenderTileShowsGitStateForDormantRepo(t *testing.T) {
 	out := renderTile(targets[0], 22, false)
 	if !strings.Contains(out, "main") {
 		t.Errorf("dormant tile should show its branch, got:\n%s", out)
+	}
+}
+
+// lipgloss Width() counts padding but not border, so the tile's declared width
+// must account for both or tiles come up short and leave a ragged gap.
+func TestRenderTileFillsItsCell(t *testing.T) {
+	targets := BuildTargets([]sources.TmuxSession{sess("my-app")}, nil, nil, "cockpit")
+	for _, width := range []int{18, 20, 29} {
+		out := renderTile(targets[0], width, false)
+		for i, line := range strings.Split(out, "\n") {
+			if w := lipgloss.Width(line); w != width {
+				t.Errorf("renderTile(width=%d) line %d is %d cells: %q", width, i, w, line)
+			}
+		}
 	}
 }
 

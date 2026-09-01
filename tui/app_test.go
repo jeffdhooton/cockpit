@@ -95,6 +95,7 @@ func TestFocusCycling(t *testing.T) {
 	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
+	m.view = ViewDashboard // Tab panel cycling is a dashboard behavior
 
 	if m.focused != PanelSessions {
 		t.Errorf("default focus = %d, want PanelSessions(%d)", m.focused, PanelSessions)
@@ -142,6 +143,7 @@ func TestCaptureModeEnterExit(t *testing.T) {
 	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
+	m.view = ViewDashboard // capture is a dashboard behavior
 
 	m.handleNavKey(keyMsg("c"))
 	if m.mode != ModeCapture {
@@ -162,6 +164,7 @@ func TestCaptureModeBlocksNavKeys(t *testing.T) {
 	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
+	m.view = ViewDashboard // capture is a dashboard behavior
 
 	m.handleNavKey(keyMsg("c"))
 	if m.mode != ModeCapture {

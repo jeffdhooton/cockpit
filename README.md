@@ -6,27 +6,29 @@ A tmux-native terminal dashboard for developers juggling multiple projects. One 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ```
-┌─ Sessions ───────────────────────────────────────┐
-│ ┌───────────┐ ┌───────────┐ ┌───────────┐       │
-│ │ cockpit*  │ │ my-app    │ │ side-proj  │       │
-│ │ attached  │ │ detached  │ │ attached   │       │
-│ └───────────┘ └───────────┘ └───────────┘       │
-├─ Repos ──────────────────────────────────────────┤
-│ my-app      feat/auth     ✗ 3    ↑2  add auth…   │
-│ side-proj   main          ✓          fix typo…    │
-├─ Today ──────────────────────────────────────────┤
-│ [x] Ship auth fix                                │
-│ [ ] Review PR for side-proj  ◂                   │
-├─ Inbox ──────────────┬─ Signals ─────────────────┤
-│ [ ] look into caching │ ✗ 1 repo with failing CI  │
-│ > _                   │ ✓ All sessions active      │
-├──────────────────────┴───────────────────────────┤
-│ Tab panels  j/k nav  Enter jump  x toggle  c cap │
+┌─ COCKPIT ────────────────────────────────────────┐
+│ ╭────────────╮ ╭────────────╮ ╭────────────╮     │
+│ │ my-app     │ │ scry       │ │ side-proj  │     │
+│ │ ● working  │ │ ● idle 4m  │ │ ● attached │     │
+│ │ feat/auth✗3│ │ main ✓ ↑2  │ │ main ✓     │     │
+│ ╰────────────╯ ╰────────────╯ ╰────────────╯     │
+│ ╭────────────╮ ╭────────────╮                    │
+│ │ dotfiles   │ │ notes      │                    │
+│ │ ● no session │ ● no session                    │
+│ │ main ✓     │ │ main ✗ 3   │                    │
+│ ╰────────────╯ ╰────────────╯                    │
+├─ my-app ─────────────────────────────────────────┤
+│ $ go test ./...                                  │
+│ ok  github.com/you/my-app  0.31s                 │
+├──────────────────────────────────────────────────┤
+│ HJKL nav · ENTER jump · N new · / find · D dash  │
 └──────────────────────────────────────────────────┘
 ```
 
 ## What it does
 
+- **Grid** — Running tmux sessions and saved repos as one grid. `hjkl` to move, Enter to jump; a dormant repo gets a session created on the spot. The grid reflows from 4 columns down to 1, so it stays usable over SSH from a phone.
+- **Dashboard** — Press `d` for the full five-panel view below. Set `default_view = "dashboard"` in config.toml to make it the startup view.
 - **Sessions** — See all running tmux sessions. Press Enter to jump to one, or auto-create a new session from a repo.
 - **Repos** — Git status across all your projects: branch, dirty/clean, unpushed commits, last commit message.
 - **Today** — Tasks pulled from a markdown file in your Obsidian vault. Toggle them with `x`.

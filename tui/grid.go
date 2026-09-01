@@ -70,8 +70,10 @@ func BuildTargets(
 }
 
 const (
-	// gridCellWidth is one tile's total footprint: 18 content + 2 border + 2 gap.
-	gridCellWidth = 22
+	// gridCellWidth is one tile's total footprint: 14 content + 2 border + 2 padding.
+	// GridCols is measured against the grid's content width, not the terminal's,
+	// so this budget excludes the enclosing panel's own border and padding.
+	gridCellWidth = 18
 	// gridMaxCols caps the grid. An 8-wide grid on a 200-column terminal is too
 	// sparse to scan, and the width is better spent on the preview.
 	gridMaxCols = 4
@@ -204,7 +206,8 @@ func renderTile(t Target, width int, selected bool) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
 		Padding(0, 1).
-		Width(inner).
+		// lipgloss Width counts padding but not border; inner is the text budget.
+		Width(inner + 2).
 		Height(3).
 		MaxHeight(gridTileH).
 		Render(name + "\n" + status + "\n" + git)
@@ -284,6 +287,18 @@ func (m Model) overlay(dialog string) string {
 		lipgloss.WithWhitespaceForeground(ColorBg))
 }
 
+// gridContentWidth is the width available to tiles: the terminal less the
+// enclosing panel's 2 border and 2 padding cells. Rendering and cursor movement
+// must both measure columns against this, or a keypress moves by a different
+// number of columns than the eye sees.
+func (m Model) gridContentWidth() int {
+	w := m.width - 4
+	if w < gridCellWidth {
+		return gridCellWidth
+	}
+	return w
+}
+
 // gridTargets builds the current tile list from live sessions and configured repos.
 func (m Model) gridTargets() []Target {
 	return BuildTargets(m.sessions.Sessions, m.repos.Repos, m.sessions.Statuses, m.config.General.SessionName)
@@ -313,8 +328,8 @@ func (m Model) gridView() string {
 		}
 	}
 
-	// Panel chrome eats 2 border rows + 1 title row, and 2 border + 2 padding cells.
-	grid := RenderGrid(targets, cursor, m.width-4, gridH-3)
+	// Panel chrome eats 2 border rows + 1 title row on top of the content width.
+	grid := RenderGrid(targets, cursor, m.gridContentWidth(), gridH-3)
 	page := RenderPanel("Cockpit", grid, m.width, gridH, true)
 
 	if showPreview {
@@ -388,7 +403,7 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 // the dashboard's: panel-scoped keys have no meaning when no panels are shown.
 func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 	targets := m.gridTargets()
-	cols := GridCols(m.width)
+	cols := GridCols(m.gridContentWidth())
 	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
 
 	move := func(dx, dy int) tea.Cmd {
