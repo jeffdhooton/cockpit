@@ -2,11 +2,50 @@ package sources
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// Runner executes a tmux command and returns its stdout. Everything that
+// touches tmux goes through this, so callers can be tested without a server.
+type Runner interface {
+	Run(ctx context.Context, args ...string) (string, error)
+}
+
+// ExecRunner runs tmux as a subprocess.
+type ExecRunner struct {
+	Timeout time.Duration
+}
+
+func (r ExecRunner) Run(ctx context.Context, args ...string) (string, error) {
+	timeout := r.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+	if err != nil {
+		verb := "tmux"
+		if len(args) > 0 {
+			verb = args[0]
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("tmux %s: %s", verb, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", fmt.Errorf("tmux %s: %w", verb, err)
+	}
+	return string(out), nil
+}
+
+// DefaultRunner returns the Runner used outside tests.
+func DefaultRunner() Runner { return ExecRunner{} }
 
 // GetTmuxSessions returns all tmux sessions via the tmux CLI.
 func GetTmuxSessions(ctx context.Context) ([]TmuxSession, error) {
