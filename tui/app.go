@@ -455,6 +455,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
+	if m.view == ViewGrid {
+		return m.handleGridKey(msg)
+	}
 	switch msg.String() {
 	case "tab":
 		m.focused = (m.focused + 1) % panelCount
@@ -470,6 +473,9 @@ func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
 		if m.focused == PanelSessions {
 			return m.fetchPreview()
 		}
+	case "d":
+		m.view = ViewGrid
+		return nil
 	case "q":
 		return tea.Quit
 	case "r":

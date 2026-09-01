@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jhoot/cockpit/sources"
 )
@@ -349,5 +350,90 @@ func (m Model) renderPreviewPanel(height int) string {
 	return RenderPanel(name, strings.Join(lines, "\n"), m.width, height, false)
 }
 
-// GridKeyhintsView renders the grid's key bar. Filled in by Task 6.
-func GridKeyhintsView(width int) string { return "" }
+// setGridCursor moves the selection and keeps SessionsModel.Cursor aligned, so
+// the preview, `s` save, and the search overlay keep working off one selection.
+func (m *Model) setGridCursor(targets []Target, idx int) {
+	if idx < 0 || idx >= len(targets) {
+		return
+	}
+	m.gridIndex = idx
+	m.gridCursor = targets[idx].Label
+	for i, s := range m.sessions.Sessions {
+		if s.Name == targets[idx].Label {
+			m.sessions.Cursor = i
+			return
+		}
+	}
+}
+
+// enterTarget switches to a running session, or creates and switches to one for
+// a dormant repo.
+func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
+	if idx < 0 || idx >= len(targets) {
+		return nil
+	}
+	t := targets[idx]
+	if t.Running() {
+		name := t.Label
+		return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxSwitch(name)} }
+	}
+	if t.Repo == nil {
+		return nil
+	}
+	label, path := t.Label, t.Repo.Path
+	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJump(label, path)} }
+}
+
+// handleGridKey is the grid view's key surface. It is deliberately narrower than
+// the dashboard's: panel-scoped keys have no meaning when no panels are shown.
+func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
+	targets := m.gridTargets()
+	cols := GridCols(m.width)
+	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+
+	move := func(dx, dy int) tea.Cmd {
+		m.setGridCursor(targets, MoveGridCursor(idx, len(targets), cols, dx, dy))
+		return m.fetchPreview()
+	}
+
+	switch msg.String() {
+	case "h", "left":
+		return move(-1, 0)
+	case "l", "right":
+		return move(1, 0)
+	case "k", "up":
+		return move(0, -1)
+	case "j", "down":
+		return move(0, 1)
+	case "enter":
+		return m.enterTarget(targets, idx)
+	case "d":
+		m.view = ViewDashboard
+		return nil
+	case "n":
+		m.mode = ModeNewSession
+		m.newSessionStep = 0
+		m.newSessionPath = ""
+		m.newSessionErr = ""
+		m.newSessionInput.SetValue("")
+		m.newSessionInput.Placeholder = "~/workspace/my-project"
+		m.newSessionInput.Focus()
+		return nil
+	case "s":
+		if idx < len(targets) && targets[idx].Running() {
+			return m.saveSessionAsRepo()
+		}
+		return nil
+	case "/":
+		m.mode = ModeSearch
+		m.searchInput.SetValue("")
+		m.searchInput.Focus()
+		m.updateSearchResults()
+		return nil
+	case "r":
+		return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub())
+	case "q":
+		return tea.Quit
+	}
+	return nil
+}

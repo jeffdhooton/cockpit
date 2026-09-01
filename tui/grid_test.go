@@ -341,3 +341,99 @@ func TestPreviewSkippedAtPhoneWidth(t *testing.T) {
 		t.Error("fetchPreview should still run on desktop width")
 	}
 }
+
+func TestGridKeysMoveCursor(t *testing.T) {
+	m := gridTestModel(44, 24) // 2 cols; targets: my-app, scry (running), dotfiles (dormant)
+	targets := m.gridTargets()
+	if len(targets) != 3 {
+		t.Fatalf("setup: got %d targets, want 3", len(targets))
+	}
+
+	m.handleGridKey(keyMsg("l"))
+	if m.gridCursor != targets[1].Label {
+		t.Errorf("after l: cursor = %q, want %q", m.gridCursor, targets[1].Label)
+	}
+
+	m.handleGridKey(keyMsg("j"))
+	if m.gridCursor != targets[2].Label {
+		t.Errorf("after j onto short final row: cursor = %q, want %q", m.gridCursor, targets[2].Label)
+	}
+
+	m.handleGridKey(keyMsg("k"))
+	if m.gridCursor != targets[0].Label {
+		t.Errorf("after k: cursor = %q, want %q", m.gridCursor, targets[0].Label)
+	}
+
+	m.handleGridKey(keyMsg("h"))
+	if m.gridCursor != targets[0].Label {
+		t.Errorf("h at start should clamp, cursor = %q", m.gridCursor)
+	}
+}
+
+func TestGridCursorKeepsSessionsCursorAligned(t *testing.T) {
+	m := gridTestModel(120, 40)
+	m.handleGridKey(keyMsg("l")) // move to the second running target
+	targets := m.gridTargets()
+	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+	if got := m.selectedSessionName(); got != targets[idx].Label {
+		t.Errorf("sessions cursor out of sync: selectedSessionName = %q, grid cursor = %q",
+			got, targets[idx].Label)
+	}
+}
+
+func TestGridEnterReturnsCommandForRunningAndDormant(t *testing.T) {
+	m := gridTestModel(120, 40)
+	targets := m.gridTargets()
+
+	m.setGridCursor(targets, 0) // running
+	if cmd := m.enterTarget(targets, 0); cmd == nil {
+		t.Error("Enter on a running target should return a switch cmd")
+	}
+
+	dormant := len(targets) - 1
+	if targets[dormant].Running() {
+		t.Fatalf("setup: target %d should be dormant", dormant)
+	}
+	if cmd := m.enterTarget(targets, dormant); cmd == nil {
+		t.Error("Enter on a dormant repo should return a jump cmd")
+	}
+}
+
+func TestGridEnterOnEmptyGridIsSafe(t *testing.T) {
+	m := gridTestModel(44, 24)
+	m.sessions.Sessions = nil
+	m.repos.Repos = nil
+	if cmd := m.enterTarget(m.gridTargets(), 0); cmd != nil {
+		t.Error("Enter on an empty grid should return nil, not a cmd")
+	}
+}
+
+func TestGridDashboardToggle(t *testing.T) {
+	m := gridTestModel(120, 40)
+	m.handleGridKey(keyMsg("d"))
+	if m.view != ViewDashboard {
+		t.Errorf("d in grid view should switch to dashboard, view = %v", m.view)
+	}
+	m.handleNavKey(keyMsg("d"))
+	if m.view != ViewGrid {
+		t.Errorf("d in dashboard view should switch back to grid, view = %v", m.view)
+	}
+}
+
+func TestGridQuitAndRefresh(t *testing.T) {
+	m := gridTestModel(120, 40)
+	if cmd := m.handleGridKey(keyMsg("q")); cmd == nil {
+		t.Error("q should return a quit cmd")
+	}
+	if cmd := m.handleGridKey(keyMsg("r")); cmd == nil {
+		t.Error("r should return a refresh cmd")
+	}
+}
+
+func TestGridSearchKeyOpensOverlay(t *testing.T) {
+	m := gridTestModel(120, 40)
+	m.handleGridKey(keyMsg("/"))
+	if m.mode != ModeSearch {
+		t.Errorf("/ should enter search mode, mode = %v", m.mode)
+	}
+}

@@ -64,3 +64,31 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 	sep := MutedText.Render(" · ")
 	return "  " + strings.Join(parts, sep)
 }
+
+// GridKeyhintsView renders the grid view's key bar. Hints truncate from the
+// right, so the phone sees the first few and the desktop sees them all.
+func GridKeyhintsView(width int) string {
+	hints := []struct{ key, desc string }{
+		{"hjkl", "nav"},
+		{"Enter", "jump"},
+		{"n", "new"},
+		{"s", "save"},
+		{"/", "find"},
+		{"d", "dash"},
+		{"r", "refresh"},
+		{"q", "quit"},
+	}
+
+	var parts []string
+	totalLen := 0
+	for _, h := range hints {
+		key := strings.ToUpper(h.key)
+		plainLen := len(key) + 1 + len(h.desc) + 3
+		if totalLen+plainLen > width && len(parts) > 0 {
+			break
+		}
+		parts = append(parts, AccentText.Render(key)+" "+MutedText.Render(h.desc))
+		totalLen += plainLen
+	}
+	return "  " + strings.Join(parts, MutedText.Render(" · "))
+}
