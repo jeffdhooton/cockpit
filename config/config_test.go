@@ -171,3 +171,230 @@ func TestDefaultViewAcceptsDashboard(t *testing.T) {
 		t.Errorf("validate rejected dashboard: %v", err)
 	}
 }
+
+// writeAndLoad writes a config body to a temp file and loads it, failing the
+// test on any load error.
+func writeAndLoad(t *testing.T, body string) *Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return cfg
+}
+
+// loadErr writes a config body to a temp file and returns the load error.
+func loadErr(t *testing.T, body string) error {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	return err
+}
+
+func TestLoadProcesses(t *testing.T) {
+	cfg := writeAndLoad(t, `
+[obsidian]
+vault_path = "/tmp/vault"
+
+[[repos]]
+path = "/tmp/my-app"
+label = "my-app"
+
+  [[repos.processes]]
+  name = "dev"
+  command = "npm run dev"
+
+  [[repos.processes]]
+  name = "test"
+  command = "npm test"
+  auto_start = false
+  working_dir = "packages/web"
+  env = { PORT = "3000" }
+
+    [repos.processes.status]
+    ready = 'Local:\s+(\S+)'
+`)
+	procs := cfg.Repos[0].Processes
+	if len(procs) != 2 {
+		t.Fatalf("want 2 processes, got %d", len(procs))
+	}
+	if !procs[0].ShouldAutoStart() {
+		t.Error("omitted auto_start should default to true")
+	}
+	if procs[1].ShouldAutoStart() {
+		t.Error("auto_start = false should be false")
+	}
+	if got := procs[1].ResolvedWorkingDir("/tmp/my-app"); got != "/tmp/my-app/packages/web" {
+		t.Errorf("working dir = %q", got)
+	}
+	if procs[1].Env["PORT"] != "3000" {
+		t.Errorf("env not parsed: %v", procs[1].Env)
+	}
+	if procs[1].Status == nil || procs[1].Status.Ready != `Local:\s+(\S+)` {
+		t.Errorf("status not parsed: %+v", procs[1].Status)
+	}
+}
+
+func TestValidateProcesses(t *testing.T) {
+	const head = `
+[obsidian]
+vault_path = "/tmp/vault"
+
+[[repos]]
+path = "/tmp/my-app"
+label = "my-app"
+`
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "empty name",
+			body: head + "\n  [[repos.processes]]\n  name = \"\"\n  command = \"x\"\n",
+			want: "no name",
+		},
+		{
+			name: "name with a space",
+			body: head + "\n  [[repos.processes]]\n  name = \"dev server\"\n  command = \"x\"\n",
+			want: "dev server",
+		},
+		{
+			name: "duplicate names",
+			body: head + "\n  [[repos.processes]]\n  name = \"dev\"\n  command = \"x\"\n\n  [[repos.processes]]\n  name = \"dev\"\n  command = \"y\"\n",
+			want: "duplicate process",
+		},
+		{
+			name: "empty command",
+			body: head + "\n  [[repos.processes]]\n  name = \"dev\"\n  command = \"   \"\n",
+			want: "command is required",
+		},
+		{
+			name: "invalid status regexp",
+			body: head + "\n  [[repos.processes]]\n  name = \"dev\"\n  command = \"x\"\n\n    [repos.processes.status]\n    ready = \"(unclosed\"\n",
+			want: "not a valid regexp",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := loadErr(t, tc.body)
+			if err == nil {
+				t.Fatal("expected a validation error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestDaemonDefaults(t *testing.T) {
+	cfg := writeAndLoad(t, `
+[obsidian]
+vault_path = "/tmp/vault"
+`)
+	if !cfg.Daemon.IsEnabled() {
+		t.Error("daemon should be enabled by default")
+	}
+	if cfg.Daemon.Port != 45679 {
+		t.Errorf("daemon port = %d, want default 45679", cfg.Daemon.Port)
+	}
+}
+
+func TestDaemonExplicitlyDisabled(t *testing.T) {
+	cfg := writeAndLoad(t, `
+[obsidian]
+vault_path = "/tmp/vault"
+
+[daemon]
+enabled = false
+port = 5000
+`)
+	if cfg.Daemon.IsEnabled() {
+		t.Error("enabled = false should disable the daemon")
+	}
+	if cfg.Daemon.Port != 5000 {
+		t.Errorf("daemon port = %d, want 5000", cfg.Daemon.Port)
+	}
+}
+
+func TestResolvedWorkingDir(t *testing.T) {
+	cases := []struct {
+		name     string
+		workDir  string
+		repoPath string
+		want     string
+	}{
+		{"empty falls back to repo", "", "/tmp/app", "/tmp/app"},
+		{"absolute used as-is", "/opt/elsewhere", "/tmp/app", "/opt/elsewhere"},
+		{"relative joins the repo", "web", "/tmp/app", "/tmp/app/web"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := ProcessConfig{WorkingDir: tc.workDir}
+			if got := p.ResolvedWorkingDir(tc.repoPath); got != tc.want {
+				t.Errorf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRepoAndProcessLookup(t *testing.T) {
+	cfg := writeAndLoad(t, `
+[obsidian]
+vault_path = "/tmp/vault"
+
+[[repos]]
+path = "/tmp/my-app"
+label = "my-app"
+
+  [[repos.processes]]
+  name = "dev"
+  command = "npm run dev"
+`)
+	repo, ok := cfg.Repo("my-app")
+	if !ok || repo.Path != "/tmp/my-app" {
+		t.Fatalf("Repo lookup failed: %+v %v", repo, ok)
+	}
+	if _, ok := cfg.Repo("ghost"); ok {
+		t.Error("unknown label should not resolve")
+	}
+	proc, ok := repo.Process("dev")
+	if !ok || proc.Command != "npm run dev" {
+		t.Fatalf("Process lookup failed: %+v %v", proc, ok)
+	}
+	if _, ok := repo.Process("ghost"); ok {
+		t.Error("unknown process should not resolve")
+	}
+}
+
+func TestProcessWorkingDirTildeExpanded(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home dir")
+	}
+	cfg := writeAndLoad(t, `
+[obsidian]
+vault_path = "/tmp/vault"
+
+[[repos]]
+path = "/tmp/my-app"
+label = "my-app"
+
+  [[repos.processes]]
+  name = "dev"
+  command = "x"
+  working_dir = "~/elsewhere"
+`)
+	want := filepath.Join(home, "elsewhere")
+	if got := cfg.Repos[0].Processes[0].ResolvedWorkingDir("/tmp/my-app"); got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}

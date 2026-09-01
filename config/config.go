@@ -4,11 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
+
+// DefaultDaemonPort is the loopback port the tool server binds by default.
+const DefaultDaemonPort = 45679
+
+// validProcessName constrains process names to what tmux accepts as a window
+// name without quoting.
+var validProcessName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 type Config struct {
 	General  GeneralConfig  `toml:"general"`
@@ -16,6 +24,7 @@ type Config struct {
 	Repos    []RepoConfig   `toml:"repos"`
 	GitHub   GitHubConfig   `toml:"github"`
 	Signals  SignalsConfig  `toml:"signals"`
+	Daemon   DaemonConfig   `toml:"daemon"`
 }
 
 type GeneralConfig struct {
@@ -31,8 +40,98 @@ type ObsidianConfig struct {
 }
 
 type RepoConfig struct {
-	Path  string `toml:"path"`
-	Label string `toml:"label"`
+	Path      string          `toml:"path"`
+	Label     string          `toml:"label"`
+	Processes []ProcessConfig `toml:"processes"`
+}
+
+// ProcessConfig declares a background process for a repo. Each one launches as
+// its own tmux window in the repo's session.
+type ProcessConfig struct {
+	Name       string            `toml:"name"`
+	Command    string            `toml:"command"`
+	AutoStart  *bool             `toml:"auto_start"`
+	WorkingDir string            `toml:"working_dir"`
+	Env        map[string]string `toml:"env"`
+	Status     *StatusPatterns   `toml:"status"`
+}
+
+// StatusPatterns holds optional regexps used to classify a process's output.
+type StatusPatterns struct {
+	Ready      string `toml:"ready"`
+	Compiling  string `toml:"compiling"`
+	Error      string `toml:"error"`
+	Restarting string `toml:"restarting"`
+}
+
+// All returns every non-empty pattern keyed by its status label.
+func (s *StatusPatterns) All() map[string]string {
+	if s == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for label, expr := range map[string]string{
+		"ready":      s.Ready,
+		"compiling":  s.Compiling,
+		"error":      s.Error,
+		"restarting": s.Restarting,
+	} {
+		if expr != "" {
+			out[label] = expr
+		}
+	}
+	return out
+}
+
+// ShouldAutoStart reports whether the process launches on jump. Omitting
+// auto_start means yes — the common case is a process you always want up.
+func (p ProcessConfig) ShouldAutoStart() bool {
+	return p.AutoStart == nil || *p.AutoStart
+}
+
+// ResolvedWorkingDir returns the directory the process runs in. A relative
+// working_dir is joined to the repo path; an empty one is the repo itself.
+func (p ProcessConfig) ResolvedWorkingDir(repoPath string) string {
+	if p.WorkingDir == "" {
+		return repoPath
+	}
+	dir := ExpandTilde(p.WorkingDir)
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(repoPath, dir)
+}
+
+// Process returns the named process from this repo.
+func (r RepoConfig) Process(name string) (ProcessConfig, bool) {
+	for _, p := range r.Processes {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return ProcessConfig{}, false
+}
+
+// DaemonConfig configures the local tool server for agents.
+type DaemonConfig struct {
+	Enabled *bool `toml:"enabled"`
+	Port    int   `toml:"port"`
+}
+
+// IsEnabled reports whether the daemon should serve. Omitting the setting
+// means yes.
+func (d DaemonConfig) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
+}
+
+// Repo returns the configured repo with the given label.
+func (c *Config) Repo(label string) (RepoConfig, bool) {
+	for _, r := range c.Repos {
+		if r.Label == label {
+			return r, true
+		}
+	}
+	return RepoConfig{}, false
 }
 
 type GitHubConfig struct {
@@ -93,6 +192,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.Signals.StaleSessionThreshold == "" {
 		cfg.Signals.StaleSessionThreshold = "24h"
 	}
+	if cfg.Daemon.Port == 0 {
+		cfg.Daemon.Port = DefaultDaemonPort
+	}
 	// Default booleans for signals (true by default — use pointer or explicit check)
 	// Since Go zero-values bools to false, we handle this via a separate mechanism.
 	// For simplicity, we treat the TOML as authoritative and set defaults only if
@@ -105,6 +207,12 @@ func expandPaths(cfg *Config) {
 	cfg.Obsidian.InboxFile = ExpandTilde(cfg.Obsidian.InboxFile)
 	for i := range cfg.Repos {
 		cfg.Repos[i].Path = ExpandTilde(cfg.Repos[i].Path)
+		for j := range cfg.Repos[i].Processes {
+			p := &cfg.Repos[i].Processes[j]
+			if p.WorkingDir != "" {
+				p.WorkingDir = ExpandTilde(p.WorkingDir)
+			}
+		}
 	}
 }
 
@@ -122,6 +230,37 @@ func validate(cfg *Config) error {
 	case "", "grid", "dashboard":
 	default:
 		return fmt.Errorf("config: default_view must be \"grid\" or \"dashboard\", got %q", cfg.General.DefaultView)
+	}
+	if err := validateProcesses(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProcesses(cfg *Config) error {
+	for _, repo := range cfg.Repos {
+		seen := map[string]bool{}
+		for _, p := range repo.Processes {
+			if p.Name == "" {
+				return fmt.Errorf("config: repo %q has a process with no name", repo.Label)
+			}
+			if !validProcessName.MatchString(p.Name) {
+				return fmt.Errorf("config: repo %q process %q: name must be alphanumeric, hyphens, or underscores", repo.Label, p.Name)
+			}
+			if seen[p.Name] {
+				return fmt.Errorf("config: repo %q has duplicate process %q", repo.Label, p.Name)
+			}
+			seen[p.Name] = true
+
+			if strings.TrimSpace(p.Command) == "" {
+				return fmt.Errorf("config: repo %q process %q: command is required", repo.Label, p.Name)
+			}
+			for label, expr := range p.Status.All() {
+				if _, err := regexp.Compile(expr); err != nil {
+					return fmt.Errorf("config: repo %q process %q: status.%s is not a valid regexp: %w", repo.Label, p.Name, label, err)
+				}
+			}
+		}
 	}
 	return nil
 }
