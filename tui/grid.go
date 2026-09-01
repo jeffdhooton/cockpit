@@ -251,3 +251,103 @@ func RenderGrid(targets []Target, cursor, width, height int) string {
 
 	return strings.Join(out, "\n")
 }
+
+// View renders the active view, then any modal overlay on top of it.
+func (m Model) View() string {
+	if m.width < MinTerminalWidth {
+		return lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			WarningText.Render("Terminal too narrow.\nResize or press q to quit."))
+	}
+
+	page := m.dashboardView()
+	if m.view == ViewGrid {
+		page = m.gridView()
+	}
+
+	switch m.mode {
+	case ModeNewSession:
+		page = m.overlay(m.renderNewSessionDialog())
+	case ModeSearch:
+		page = m.overlay(m.renderSearchDialog())
+	case ModeVizPicker:
+		page = m.overlay(m.renderVizPickerDialog())
+	}
+	return page
+}
+
+// overlay centres a modal dialog over a blank ground.
+func (m Model) overlay(dialog string) string {
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(ColorBg))
+}
+
+// gridTargets builds the current tile list from live sessions and configured repos.
+func (m Model) gridTargets() []Target {
+	return BuildTargets(m.sessions.Sessions, m.repos.Repos, m.sessions.Statuses, m.config.General.SessionName)
+}
+
+// gridView renders the unified grid, plus the session preview on desktop widths.
+func (m Model) gridView() string {
+	targets := m.gridTargets()
+	cursor := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+
+	hints := GridKeyhintsView(m.width)
+	if m.transientErr != "" {
+		hints = WarningText.Render(m.transientErr)
+	}
+
+	body := m.height - 1 // keyhints row
+	if body < gridTileH {
+		body = gridTileH
+	}
+
+	gridH := body
+	showPreview := m.width >= MobileMaxWidth && len(targets) > 0
+	if showPreview {
+		gridH = body * 3 / 5
+		if gridH < gridTileH+3 {
+			gridH = gridTileH + 3
+		}
+	}
+
+	// Panel chrome eats 2 border rows + 1 title row, and 2 border + 2 padding cells.
+	grid := RenderGrid(targets, cursor, m.width-4, gridH-3)
+	page := RenderPanel("Cockpit", grid, m.width, gridH, true)
+
+	if showPreview {
+		page = lipgloss.JoinVertical(lipgloss.Left, page, m.renderPreviewPanel(body-gridH))
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, page, hints)
+}
+
+// renderPreviewPanel renders the capture-pane output for the selected session.
+func (m Model) renderPreviewPanel(height int) string {
+	name := m.selectedSessionName()
+	if name == "" || m.sessionPreview == "" {
+		return RenderPanel("Preview", MutedText.Render("(no preview)"), m.width, height, false)
+	}
+
+	innerW := m.width - 4
+	maxLines := height - 3
+	if maxLines < 1 {
+		maxLines = 1
+	}
+
+	lines := strings.Split(m.sessionPreview, "\n")
+	for i, line := range lines {
+		if len(line) > innerW {
+			lines[i] = line[:innerW-1] + "…"
+		}
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+
+	return RenderPanel(name, strings.Join(lines, "\n"), m.width, height, false)
+}
+
+// GridKeyhintsView renders the grid's key bar. Filled in by Task 6.
+func GridKeyhintsView(width int) string { return "" }

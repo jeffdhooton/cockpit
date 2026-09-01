@@ -42,6 +42,14 @@ const (
 	ModeVizPicker
 )
 
+// ViewMode selects the top-level layout.
+type ViewMode int
+
+const (
+	ViewGrid      ViewMode = iota // unified sessions + repos grid (default)
+	ViewDashboard                 // the five-panel dashboard
+)
+
 // Layout holds calculated panel dimensions.
 type Layout struct {
 	SessionsH    int // cards + preview
@@ -166,6 +174,10 @@ type Model struct {
 	mode       Mode
 	layout     Layout
 
+	view       ViewMode
+	gridCursor string // label of the selected target; survives list churn
+	gridIndex  int    // last resolved index, a fallback when the label is gone
+
 	sessions       SessionsModel
 	repos          ReposModel
 	tasks          TasksModel
@@ -216,6 +228,9 @@ func NewModel(cfg *config.Config, configPath string) Model {
 		viz:             NewVizModel(),
 		newSessionInput: ti,
 		searchInput:     si,
+	}
+	if cfg.General.DefaultView == "dashboard" {
+		m.view = ViewDashboard
 	}
 	return m
 }
@@ -782,13 +797,9 @@ func (m *Model) cursorDown() {
 }
 
 
-func (m Model) View() string {
-	if m.width < 60 {
-		return lipgloss.Place(m.width, m.height,
-			lipgloss.Center, lipgloss.Center,
-			WarningText.Render("Terminal too narrow (need 60+ cols).\nResize or press q to quit."))
-	}
-
+// dashboardView renders the five-panel layout: sessions and preview, projects
+// and today, notes and the visualizer.
+func (m Model) dashboardView() string {
 	showLastCommit := m.layout.LeftW >= 50
 
 	// === Sessions panel (cards + preview, fixed heights) ===
@@ -861,38 +872,12 @@ func (m Model) View() string {
 		keyhints = WarningText.Render(m.transientErr)
 	}
 
-	page := lipgloss.JoinVertical(lipgloss.Left,
+	return lipgloss.JoinVertical(lipgloss.Left,
 		sessionsPanel,
 		middleRow,
 		bottomRow,
 		keyhints,
 	)
-
-	// Overlay new session dialog if active
-	if m.mode == ModeNewSession {
-		dialog := m.renderNewSessionDialog()
-		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
-			lipgloss.WithWhitespaceChars(" "),
-			lipgloss.WithWhitespaceForeground(ColorBg))
-	}
-
-	// Overlay search dialog
-	if m.mode == ModeSearch {
-		dialog := m.renderSearchDialog()
-		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
-			lipgloss.WithWhitespaceChars(" "),
-			lipgloss.WithWhitespaceForeground(ColorBg))
-	}
-
-	// Overlay viz picker
-	if m.mode == ModeVizPicker {
-		dialog := m.renderVizPickerDialog()
-		page = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog,
-			lipgloss.WithWhitespaceChars(" "),
-			lipgloss.WithWhitespaceForeground(ColorBg))
-	}
-
-	return page
 }
 
 // renderPreviewHeader renders the toolbar above the session preview: a muted
@@ -1045,6 +1030,11 @@ func (m Model) selectedSessionName() string {
 }
 
 func (m Model) fetchPreview() tea.Cmd {
+	// capture-pane on every cursor move is latency nobody wants over a phone
+	// link, and nothing renders the preview below this width anyway.
+	if m.width < MobileMaxWidth {
+		return nil
+	}
 	name := m.selectedSessionName()
 	if name == "" {
 		return nil

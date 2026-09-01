@@ -267,3 +267,77 @@ func TestRenderTileHeight(t *testing.T) {
 		t.Errorf("tile height = %d lines, want %d", got, gridTileH)
 	}
 }
+
+func gridTestModel(width, height int) Model {
+	cfg := testConfig()
+	m := NewModel(cfg, "/tmp/config.toml")
+	m.width = width
+	m.height = height
+	m.layout = CalculateLayout(width, height, 0)
+	m.sessions.Loading = false
+	m.sessions.Sessions = []sources.TmuxSession{sess("my-app"), sess("scry")}
+	m.repos.Loading = false
+	m.repos.Repos = []sources.GitRepoStatus{repo("dotfiles")}
+	return m
+}
+
+func TestDefaultViewIsGrid(t *testing.T) {
+	cfg := testConfig()
+	cfg.General.DefaultView = "grid"
+	if m := NewModel(cfg, "/tmp/config.toml"); m.view != ViewGrid {
+		t.Errorf("view = %v, want ViewGrid", m.view)
+	}
+}
+
+func TestDashboardViewHonoursConfig(t *testing.T) {
+	cfg := testConfig()
+	cfg.General.DefaultView = "dashboard"
+	if m := NewModel(cfg, "/tmp/config.toml"); m.view != ViewDashboard {
+		t.Errorf("view = %v, want ViewDashboard", m.view)
+	}
+}
+
+func TestGridTargetsExcludeCockpitSession(t *testing.T) {
+	m := gridTestModel(120, 40)
+	m.sessions.Sessions = append(m.sessions.Sessions, sess("cockpit"))
+	for _, tg := range m.gridTargets() {
+		if tg.Label == "cockpit" {
+			t.Error("cockpit's own session must not appear as a target")
+		}
+	}
+}
+
+func TestGridViewRendersAtPhoneWidth(t *testing.T) {
+	m := gridTestModel(44, 24)
+	out := m.View()
+	if !strings.Contains(out, "my-app") {
+		t.Errorf("phone-width view should list sessions, got:\n%s", out)
+	}
+	for i, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > 44 {
+			t.Errorf("line %d is %d cells wide at width 44: %q", i, w, line)
+		}
+	}
+}
+
+func TestNarrowFloorIsTwentyFour(t *testing.T) {
+	m := gridTestModel(20, 24)
+	if out := m.View(); !strings.Contains(out, "too narrow") {
+		t.Errorf("width 20 should show the too-narrow message, got:\n%s", out)
+	}
+	m = gridTestModel(44, 24)
+	if out := m.View(); strings.Contains(out, "too narrow") {
+		t.Error("width 44 should render the grid, not the too-narrow message")
+	}
+}
+
+func TestPreviewSkippedAtPhoneWidth(t *testing.T) {
+	m := gridTestModel(44, 24)
+	if cmd := m.fetchPreview(); cmd != nil {
+		t.Error("fetchPreview should be a no-op below MobileMaxWidth")
+	}
+	m = gridTestModel(120, 40)
+	if cmd := m.fetchPreview(); cmd == nil {
+		t.Error("fetchPreview should still run on desktop width")
+	}
+}
