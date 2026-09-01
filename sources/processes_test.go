@@ -136,20 +136,40 @@ func TestStartProcessSetsRemainOnExit(t *testing.T) {
 	if err := StartProcess(context.Background(), f, devRepo(p), p); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.called("new-window")) != 1 {
-		t.Errorf("want a new-window call, got %v", f.calls)
+	calls := f.called("new-window")
+	if len(calls) != 1 {
+		t.Fatalf("want a single new-window call, got %v", f.calls)
 	}
-	if len(f.called("set-window-option")) != 1 {
-		t.Errorf("a crashed process must stay readable, so remain-on-exit is required: %v", f.calls)
+	// The option must ride along in that same call. A separate follow-up call
+	// can arrive after a fast-failing command has already exited, at which
+	// point tmux has closed the window and discarded the error.
+	if !slices.Contains(calls[0], "remain-on-exit") {
+		t.Errorf("a crashed process must stay readable, so remain-on-exit belongs in the launch call: %v", calls[0])
 	}
 }
 
-func TestStartProcessSurvivesRemainOnExitFailure(t *testing.T) {
-	f := &fakeRunner{errs: map[string]error{"set-window-option": errors.New("too old")}}
-	p := config.ProcessConfig{Name: "dev", Command: "npm run dev"}
+func TestEnsureSessionKeepsFailedCommandsReadable(t *testing.T) {
+	// Set on the session before any process window exists, so no crash can be
+	// lost to a race.
+	f := &fakeRunner{errs: map[string]error{"has-session": errors.New("no such session")}}
 
-	if err := StartProcess(context.Background(), f, devRepo(p), p); err != nil {
-		t.Errorf("remain-on-exit is a nicety, not a requirement: %v", err)
+	if _, err := EnsureSession(context.Background(), f, devRepo()); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.called("set-option")
+	if len(calls) != 1 || !slices.Contains(calls[0], "failed") {
+		t.Errorf("want remain-on-exit failed on the new session, got %v", f.calls)
+	}
+}
+
+func TestEnsureSessionSurvivesAnOldTmux(t *testing.T) {
+	f := &fakeRunner{errs: map[string]error{
+		"has-session": errors.New("no such session"),
+		"set-option":  errors.New("value is invalid: failed"),
+	}}
+
+	if _, err := EnsureSession(context.Background(), f, devRepo()); err != nil {
+		t.Errorf("an old tmux without the failed value must not block the session: %v", err)
 	}
 }
 

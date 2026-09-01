@@ -47,12 +47,27 @@ func NewSessionArgs(session, dir string) []string {
 	return []string{"new-session", "-d", "-s", session, "-c", dir}
 }
 
-// NewWindowArgs builds the argv for launching a process as its own window.
+// NewWindowArgs builds the argv for launching a process as its own window,
+// with remain-on-exit chained into the same tmux invocation.
+//
+// The chaining matters. A command that fails instantly — a missing binary, a
+// bad flag — can exit before a follow-up set-window-option arrives, and tmux
+// then closes the window and takes the error message with it. One invocation
+// removes the round trip that loses the evidence.
 func NewWindowArgs(session string, p config.ProcessConfig, repoPath string) []string {
 	args := []string{"new-window", "-d", "-t", session + ":", "-n", p.Name,
 		"-c", p.ResolvedWorkingDir(repoPath)}
 	args = append(args, envArgs(p.Env)...)
-	return append(args, p.Command)
+	args = append(args, p.Command, ";")
+	return append(args, RemainOnExitArgs(session, p.Name)...)
+}
+
+// RemainOnExitFailedArgs builds the argv that keeps only *failed* commands
+// readable, for a session cockpit created. Setting it before any process
+// window exists removes the race entirely, and "failed" rather than "on" means
+// the user's own shell still closes normally when they type exit.
+func RemainOnExitFailedArgs(session string) []string {
+	return []string{"set-option", "-t", session, "remain-on-exit", "failed"}
 }
 
 // RespawnWindowArgs builds the argv for restarting a process in the window it

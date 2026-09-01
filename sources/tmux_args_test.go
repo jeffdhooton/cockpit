@@ -2,6 +2,7 @@ package sources
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,6 +28,7 @@ func TestNewWindowArgs(t *testing.T) {
 	want := []string{
 		"new-window", "-d", "-t", "my-app:", "-n", "dev",
 		"-c", "/tmp/my-app/web", "-e", "PORT=3000", "npm run dev",
+		";", "set-window-option", "-t", "my-app:dev", "remain-on-exit", "on",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
@@ -39,6 +41,7 @@ func TestNewWindowArgsWithoutEnvOrWorkingDir(t *testing.T) {
 	want := []string{
 		"new-window", "-d", "-t", "my-app:", "-n", "dev",
 		"-c", "/tmp/my-app", "npm run dev",
+		";", "set-window-option", "-t", "my-app:dev", "remain-on-exit", "on",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
@@ -224,5 +227,38 @@ func TestParseTmuxOutputHandlesSeparatorInSessionName(t *testing.T) {
 	}
 	if got[0].Name != "od|d|name" || got[0].Windows != 2 || !got[0].Attached {
 		t.Errorf("got %+v", got[0])
+	}
+}
+
+func TestNewWindowArgsSetsRemainOnExitInTheSameCall(t *testing.T) {
+	// A command that fails instantly can exit before a follow-up
+	// set-window-option arrives, and tmux then closes the window and takes the
+	// error message with it. Chaining both into one tmux invocation removes
+	// the round trip that loses the evidence.
+	p := config.ProcessConfig{Name: "boom", Command: "exit 1"}
+	got := NewWindowArgs("app", p, "/r")
+
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "; set-window-option") {
+		t.Errorf("want the option chained into the same call, got %q", joined)
+	}
+	if !strings.Contains(joined, "remain-on-exit on") {
+		t.Errorf("want remain-on-exit set, got %q", joined)
+	}
+	// The command must still come before the chained separator.
+	cmdAt, sepAt := slices.Index(got, "exit 1"), slices.Index(got, ";")
+	if cmdAt < 0 || sepAt < 0 || cmdAt > sepAt {
+		t.Errorf("command must precede the chained option: %q", got)
+	}
+}
+
+func TestNewSessionArgsKeepsFailuresReadable(t *testing.T) {
+	// Set on the session before any process window exists, so there is no race
+	// at all. "failed" rather than "on" means a clean exit still closes the
+	// window — the user's own shell behaves normally.
+	got := RemainOnExitFailedArgs("app")
+	want := []string{"set-option", "-t", "app", "remain-on-exit", "failed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q want %q", got, want)
 	}
 }

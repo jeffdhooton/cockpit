@@ -67,6 +67,11 @@ func EnsureSession(ctx context.Context, r Runner, repo config.RepoConfig) (bool,
 	if _, err := r.Run(ctx, NewSessionArgs(repo.Label, repo.Path)...); err != nil {
 		return false, err
 	}
+	// Cockpit created this session, so it may set its options. Doing it before
+	// any process window exists means there is no race to lose a crash to.
+	// Best effort: older tmux does not accept "failed", and the per-window
+	// setting still covers those.
+	_, _ = r.Run(ctx, RemainOnExitFailedArgs(repo.Label)...)
 	return true, nil
 }
 
@@ -135,11 +140,11 @@ func windowState(w Window) ProcessState {
 
 // StartProcess launches a process in its own window.
 func StartProcess(ctx context.Context, r Runner, repo config.RepoConfig, p config.ProcessConfig) error {
+	// One invocation: the window and its remain-on-exit setting land together,
+	// so a command that fails instantly cannot take its error message with it.
 	if _, err := r.Run(ctx, NewWindowArgs(repo.Label, p, repo.Path)...); err != nil {
 		return fmt.Errorf("start %s/%s: %w", repo.Label, p.Name, err)
 	}
-	// Best effort: on tmux versions without the option, the process still runs.
-	_, _ = r.Run(ctx, RemainOnExitArgs(repo.Label, p.Name)...)
 	return nil
 }
 
