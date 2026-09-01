@@ -213,6 +213,13 @@ It binds `127.0.0.1:45679` only, and holds no state of its own — every answer 
 read live from tmux, git, and your markdown files, so restarting it loses
 nothing.
 
+Loopback keeps out other machines, not other programs on yours: a web page you
+visit can post to a local port, and a `tools/call` that reaches the daemon has
+already typed into your pane by the time the browser hides the reply. So the
+daemon also refuses any request carrying an `Origin` header — browsers send one,
+MCP clients do not — and requires `application/json`, which denies the
+content types a browser can send without a preflight. Bodies are capped at 1MB.
+
 Register it once with your agent tooling:
 
 ```bash

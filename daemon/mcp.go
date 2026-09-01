@@ -5,7 +5,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"time"
 )
@@ -77,6 +79,11 @@ func failure(id json.RawMessage, code int, message string) jsonRPCResponse {
 	return jsonRPCResponse{JSONRPC: "2.0", Error: &jsonRPCError{Code: code, Message: message}, ID: id}
 }
 
+// maxRequestBytes caps a request body. Every real call is a few hundred bytes
+// of JSON-RPC; the cap only exists so an unbounded reader cannot be pointed at
+// the daemon.
+const maxRequestBytes = 1 << 20
+
 // Handler returns the HTTP routes for the server. Both "/" and "/mcp" answer,
 // because clients differ on which one they post to.
 func (s *Server) Handler() http.Handler {
@@ -89,6 +96,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("mcp-session-id", s.SessionID)
 
+	if !guard(w, r) {
+		return
+	}
+
 	switch r.Method {
 	case http.MethodPost:
 		s.servePost(w, r)
@@ -99,9 +110,50 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// guard refuses anything that did not come from a local tool, and reports
+// whether the request may proceed.
+//
+// Binding loopback keeps out another machine, not another program on this one.
+// A page the user visits can post here, and by the time CORS hides the reply
+// from it a tools/call has already typed into a live pane. Two headers close
+// that without a token to manage.
+//
+// An Origin is attached by a browser and by nothing else — MCP clients send
+// none — so its presence disqualifies the request whatever it says, localhost
+// included. Requiring JSON then rules out the CORS-simple content types
+// (text/plain, the form encodings) that a browser would otherwise send with no
+// preflight at all.
+func guard(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "cockpit daemon does not answer browser requests", http.StatusForbidden)
+		return false
+	}
+	if r.Method == http.MethodPost && !isJSONContentType(r.Header.Get("Content-Type")) {
+		http.Error(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+	return true
+}
+
+// isJSONContentType reports whether a Content-Type names JSON, ignoring
+// parameters so the usual "; charset=utf-8" still passes.
+func isJSONContentType(header string) bool {
+	mediaType, _, err := mime.ParseMediaType(header)
+	return err == nil && mediaType == "application/json"
+}
+
 func (s *Server) servePost(w http.ResponseWriter, r *http.Request) {
 	var req jsonRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// An oversized body is a transport-level refusal, not a malformed
+		// document: saying "parse error" would send the caller looking at
+		// their JSON.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		s.write(w, failure(nil, -32700, "Parse error: "+err.Error()))
 		return
 	}

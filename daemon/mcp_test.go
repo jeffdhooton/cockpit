@@ -117,6 +117,7 @@ func TestNotificationIsAccepted(t *testing.T) {
 	h := NewServer(&stubTools{}, "1").Handler()
 	req := httptest.NewRequest(http.MethodPost, "/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	req.Header.Set("content-type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -221,6 +222,92 @@ func TestGetIsNotAllowedAndDeleteIsAccepted(t *testing.T) {
 	h.ServeHTTP(del, httptest.NewRequest(http.MethodDelete, "/mcp", nil))
 	if del.Code != http.StatusAccepted {
 		t.Errorf("DELETE status = %d, want 202", del.Code)
+	}
+}
+
+func TestBrowserOriginIsRefused(t *testing.T) {
+	// Loopback binding does not keep a web page out. Any page the user visits
+	// can post here; only the reply is hidden from it, and the effect — a
+	// send-keys into a live pane — would already have happened.
+	stub := &stubTools{}
+	h := NewServer(stub, "1").Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cockpit_whoami","arguments":{}}}`))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("origin", "https://example.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
+	}
+	if stub.lastName != "" {
+		t.Errorf("the tool ran anyway: %q", stub.lastName)
+	}
+}
+
+func TestLoopbackOriginIsAlsoRefused(t *testing.T) {
+	// A page served from localhost is still a page. MCP clients send no Origin
+	// at all, so its presence is the signal regardless of what it says.
+	h := NewServer(&stubTools{}, "1").Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("origin", "http://127.0.0.1:3000")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestNonJSONContentTypeIsRefused(t *testing.T) {
+	// text/plain is a CORS-simple content type: a browser sends it with no
+	// preflight. Requiring JSON is what forces the preflight that fails.
+	stub := &stubTools{}
+	h := NewServer(stub, "1").Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"cockpit_whoami","arguments":{}}}`))
+	req.Header.Set("content-type", "text/plain")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("status = %d, want 415", rec.Code)
+	}
+	if stub.lastName != "" {
+		t.Errorf("the tool ran anyway: %q", stub.lastName)
+	}
+}
+
+func TestContentTypeParametersAreAccepted(t *testing.T) {
+	h := NewServer(&stubTools{}, "1").Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("content-type", "application/json; charset=utf-8")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("a charset parameter is normal and must not be refused, status = %d", rec.Code)
+	}
+}
+
+func TestOversizedBodyIsRefused(t *testing.T) {
+	h := NewServer(&stubTools{}, "1").Handler()
+	huge := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"pad":"` +
+		strings.Repeat("x", maxRequestBytes) + `"}}`
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(huge))
+	req.Header.Set("content-type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", rec.Code)
 	}
 }
 
