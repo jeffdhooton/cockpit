@@ -274,7 +274,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		// Reserve the final column. Every line cockpit draws ends in a border
+		// character, and writing the terminal's last cell leaves it in a
+		// pending-wrap state that desynchronises Bubbletea's line diffing —
+		// tiles lose their bottom border and gain stray blank lines. One
+		// column is a cheap price for a frame that stays aligned.
+		m.width = msg.Width - 1
+		if m.width < 0 {
+			m.width = 0
+		}
 		m.height = msg.Height
 		m.layout = CalculateLayout(m.width, m.height, len(m.repos.Repos))
 

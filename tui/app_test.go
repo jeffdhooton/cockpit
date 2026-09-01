@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/jhoot/cockpit/config"
 )
 
@@ -252,5 +253,41 @@ func TestRepoForLabelUsesConfiguredProcesses(t *testing.T) {
 	}
 	if len(unknown.Processes) != 0 {
 		t.Errorf("an unconfigured session has no processes: %+v", unknown)
+	}
+}
+
+func TestViewNeverWritesTheTerminalsLastColumn(t *testing.T) {
+	// Cockpit draws a border, so the outermost cell of every line is a visible
+	// character. Writing the final column leaves the terminal in a pending-wrap
+	// state, which desynchronises Bubbletea's line diffing: tiles lose their
+	// bottom border and stray blank lines appear mid-tile. Reserving the last
+	// column costs one cell and keeps every frame aligned.
+	for _, size := range []struct{ w, h int }{
+		{80, 24}, {120, 30}, {200, 40}, {340, 37}, {400, 60},
+	} {
+		m := NewModel(&config.Config{General: config.GeneralConfig{SessionName: "self"}}, "")
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		m = updated.(Model)
+
+		for i, line := range strings.Split(m.View(), "\n") {
+			if w := lipgloss.Width(line); w >= size.w {
+				t.Errorf("%dx%d: line %d is %d wide, terminal is %d — the last column must stay unwritten",
+					size.w, size.h, i, w, size.w)
+				break
+			}
+		}
+	}
+}
+
+func TestWindowSizeReservesOneColumn(t *testing.T) {
+	m := NewModel(&config.Config{General: config.GeneralConfig{SessionName: "self"}}, "")
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = updated.(Model)
+
+	if m.width != 99 {
+		t.Errorf("width = %d, want 99 (one column reserved)", m.width)
+	}
+	if m.height != 40 {
+		t.Errorf("height = %d, want the full 40 — only the column needs reserving", m.height)
 	}
 }
