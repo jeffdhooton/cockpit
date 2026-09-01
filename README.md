@@ -33,7 +33,9 @@ A tmux-native terminal dashboard for developers juggling multiple projects. One 
 - **Repos** — Git status across all your projects: branch, dirty/clean, unpushed commits, last commit message.
 - **Today** — Tasks pulled from a markdown file in your Obsidian vault. Toggle them with `x`.
 - **Inbox** — Quick-capture thoughts with `c` or `cockpit cap "idea"` from any terminal. Triage later in Obsidian.
-- **Signals** — What needs attention: failing CI, unpushed commits, stale sessions.
+- **Signals** — What needs attention: dead processes, failing CI, unpushed commits, stale sessions.
+- **Processes** — A project can declare background processes. Jumping to it brings them up as tmux windows beside your shell.
+- **Daemon** — A local tool server so agents like Claude Code and Codex can inspect and drive the workspace.
 
 Everything refreshes automatically. Local sources (tmux, git, Obsidian) every 5 seconds, GitHub every 60 seconds.
 
@@ -93,6 +95,10 @@ stale_session_threshold = "24h"
 show_stale_sessions = true
 show_unpushed = true
 show_failing_ci = true
+
+[daemon]
+enabled = true
+port = 45679
 ```
 
 Create the Obsidian task files if they don't exist:
@@ -115,6 +121,9 @@ cockpit cap "fix the auth bug"
 
 # Interactive capture mode
 cockpit cap
+
+# Serve the tool server for agents
+cockpit daemon start
 ```
 
 ## Keybindings
@@ -129,6 +138,96 @@ cockpit cap
 | `Esc` | Exit capture mode |
 | `r` | Force refresh all sources |
 | `q` | Quit (session stays alive — run `cockpit` to return) |
+
+## Project processes
+
+A project can declare background processes. When you jump to it, cockpit creates
+the session and launches each one in its own tmux window. Window 0 stays a plain
+shell and is where you land — a noisy dev server never drops you into a log.
+
+```toml
+[[repos]]
+path = "~/workspace/my-app"
+label = "my-app"
+
+  [[repos.processes]]
+  name = "dev"                  # becomes the tmux window name
+  command = "npm run dev"
+  auto_start = true             # default; false means "declared, start on demand"
+  working_dir = "packages/web"  # optional, relative to the repo or absolute
+  env = { PORT = "3000" }       # optional
+
+    [repos.processes.status]    # optional, read by the cockpit_status tool
+    ready = 'Local:\s+(\S+)'
+    error = 'error|failed'
+```
+
+Jumping to a project that is already open reconciles rather than duplicates: a
+process that is missing gets started, one that died gets respawned in place, and
+anything already running is left alone. Process windows are set to
+`remain-on-exit`, so a crash leaves a readable dead pane instead of a window
+that vanishes. Dead processes show up in Signals, and grid tiles carry a `⚙ 1/2`
+live-count badge.
+
+### Navigating windows
+
+With `Ctrl+Space` as your tmux prefix:
+
+| Keys | Action |
+|------|--------|
+| `prefix` `1`–`9` | Jump to a window by number — the first is your shell, the rest are processes |
+| `prefix` `n` / `p` | Next / previous window |
+| `prefix` `l` | Toggle back to the last window |
+| `prefix` `w` | Interactive window picker across sessions |
+| `prefix` `,` | Rename the current window |
+| `prefix` `&` | Kill the current window |
+| `prefix` `S` | Back to cockpit (see the tmux config below) |
+
+For prefix-free flipping between a server and its logs, add these to `~/.tmux.conf`:
+
+```bash
+bind -n M-1 select-window -t 1   # Alt+1..9 straight to a window
+bind -n M-2 select-window -t 2
+bind -n M-3 select-window -t 3
+bind -n M-h previous-window
+bind -n M-l next-window
+```
+
+## Daemon
+
+Cockpit ships a local tool server so agents can see and drive your workspace:
+list projects, read a process's output, start and stop processes, check signals
+and git status, spawn a parallel agent in its own window, type into a running
+process, and capture a thought to today's list.
+
+```bash
+cockpit daemon start      # background, logs to ~/.config/cockpit/daemon.log
+cockpit daemon status
+cockpit daemon stop
+cockpit daemon install    # start at login (macOS launch agent)
+cockpit daemon uninstall
+cockpit daemon            # foreground, for debugging
+```
+
+It binds `127.0.0.1:45679` only, and holds no state of its own — every answer is
+read live from tmux, git, and your markdown files, so restarting it loses
+nothing.
+
+Register it once with your agent tooling:
+
+```bash
+bash scripts/register-mcp.sh
+```
+
+That points Claude Code (`~/.claude.json`) and Codex (`~/.codex/config.toml`) at
+the daemon, backing both up first. It is safe to run twice. To wire it up by
+hand instead, add a server with the URL `http://127.0.0.1:45679/mcp`.
+
+Twelve of the tools mirror Helm's suite one for one; `cockpit_capture` and
+`cockpit_tasks` are cockpit's own. One difference is worth knowing:
+`cockpit_status` matches your `[repos.processes.status]` patterns against the
+pane's scrollback when you call it, rather than tailing a live stream, so it
+reaches back only as far as tmux's history.
 
 ## How it works
 
