@@ -129,6 +129,58 @@ func TestReconcileCollectsErrorsAndKeepsGoing(t *testing.T) {
 	}
 }
 
+func TestReconcileWillNotStartWhenTheWindowListFailed(t *testing.T) {
+	// The session is there — has-session succeeds — but listing its windows
+	// failed. An empty list is then not evidence of an empty session, and
+	// starting everything would duplicate whatever is already running.
+	f := &fakeRunner{errs: map[string]error{"list-windows": errors.New("server exited unexpectedly")}}
+	repo := devRepo(
+		config.ProcessConfig{Name: "dev", Command: "npm run dev"},
+		config.ProcessConfig{Name: "test", Command: "npm test"},
+	)
+
+	errs := ReconcileProcesses(context.Background(), f, repo)
+
+	for _, verb := range []string{"new-window", "respawn-window"} {
+		if got := f.called(verb); len(got) != 0 {
+			t.Errorf("%s ran against a session we could not read: %v", verb, got)
+		}
+	}
+	if len(errs) != 1 {
+		t.Fatalf("want the unreadable session reported, got %d: %v", len(errs), errs)
+	}
+}
+
+func TestReconcileReportsMissingTmuxWithoutStarting(t *testing.T) {
+	f := &fakeRunner{errs: map[string]error{"list-windows": fmt.Errorf("tmux list-windows: %w", ErrTmuxNotFound)}}
+	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
+
+	errs := ReconcileProcesses(context.Background(), f, repo)
+
+	if got := f.called("new-window"); len(got) != 0 {
+		t.Errorf("no tmux means nothing can be known, let alone started: %v", got)
+	}
+	if len(errs) != 1 || !errors.Is(errs[0], ErrTmuxNotFound) {
+		t.Fatalf("want a missing-tmux error, got %v", errs)
+	}
+}
+
+func TestReconcileStartsWhenTheSessionIsVerifiedAbsent(t *testing.T) {
+	// Both calls fail because there is no such session. That is a verified
+	// negative rather than an unknown, so the launch may proceed.
+	f := &fakeRunner{errs: map[string]error{
+		"list-windows": errors.New("can't find session: app"),
+		"has-session":  errors.New("can't find session: app"),
+	}}
+	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
+
+	ReconcileProcesses(context.Background(), f, repo)
+
+	if got := f.called("new-window"); len(got) != 1 {
+		t.Errorf("want dev started in a session known to be absent, got %v", f.calls)
+	}
+}
+
 func TestStartProcessSetsRemainOnExit(t *testing.T) {
 	f := &fakeRunner{}
 	p := config.ProcessConfig{Name: "dev", Command: "npm run dev"}

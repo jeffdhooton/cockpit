@@ -178,6 +178,17 @@ func ReconcileProcesses(ctx context.Context, r Runner, repo config.RepoConfig) [
 
 	windows, err := ListWindows(ctx, r, repo.Label)
 	if err != nil {
+		// A failed listing is not proof that nothing is running, and this is the
+		// one caller that acts on the answer. Treating an unreadable session as
+		// an empty one starts every process a second time — two dev servers
+		// fighting over one port. Only a session verified absent makes an empty
+		// list trustworthy; anything else fails closed.
+		if errors.Is(err, ErrTmuxNotFound) {
+			return []error{fmt.Errorf("reconcile %s: %w", repo.Label, err)}
+		}
+		if SessionExists(ctx, r, repo.Label) {
+			return []error{fmt.Errorf("reconcile %s: cannot read windows: %w", repo.Label, err)}
+		}
 		windows = nil
 	}
 	byName := make(map[string]Window, len(windows))
