@@ -11,6 +11,9 @@ import (
 // windowFormat is the list-windows format string ParseWindows expects.
 const windowFormat = "#{window_index}\t#{window_name}\t#{pane_dead}\t#{pane_pid}\t#{window_active}"
 
+// sessionFormat is the list-sessions format string parseTmuxOutput expects.
+const sessionFormat = "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_last_attached}"
+
 // Window is one tmux window in a session.
 type Window struct {
 	Index   int
@@ -68,6 +71,12 @@ func SelectWindowArgs(session string, index int) []string {
 // format ParseWindows reads.
 func ListWindowsArgs(session string) []string {
 	return []string{"list-windows", "-t", session, "-F", windowFormat}
+}
+
+// ListSessionsArgs builds the argv for listing every session in the format
+// parseTmuxOutput reads.
+func ListSessionsArgs() []string {
+	return []string{"list-sessions", "-F", sessionFormat}
 }
 
 // HasSessionArgs builds the argv for testing whether a session exists.

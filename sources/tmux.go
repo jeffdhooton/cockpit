@@ -52,8 +52,7 @@ func GetTmuxSessions(ctx context.Context) ([]TmuxSession, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F",
-		"#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_last_attached}")
+	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", sessionFormat)
 	out, err := cmd.Output()
 	if err != nil {
 		// tmux server not running — not an error, just no sessions

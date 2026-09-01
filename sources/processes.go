@@ -27,6 +27,16 @@ type ProcessInfo struct {
 	Configured  bool         `json:"configured"`
 }
 
+// ListSessions returns every tmux session. No server running means no
+// sessions, which is an answer rather than a failure.
+func ListSessions(ctx context.Context, r Runner) ([]TmuxSession, error) {
+	out, err := r.Run(ctx, ListSessionsArgs()...)
+	if err != nil {
+		return nil, nil
+	}
+	return parseTmuxOutput(out)
+}
+
 // SessionExists reports whether a tmux session is present.
 func SessionExists(ctx context.Context, r Runner, session string) bool {
 	_, err := r.Run(ctx, HasSessionArgs(session)...)

@@ -240,3 +240,32 @@ func TestStopAndRestartProcess(t *testing.T) {
 		t.Errorf("restart should respawn the window: %v", g.calls)
 	}
 }
+
+func TestListSessionsUsesTheRunner(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-sessions": "app\t2\t1\t1700000000\ndocs\t1\t0\t1700000001\n",
+	}}
+
+	got, err := ListSessions(context.Background(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 sessions, got %d", len(got))
+	}
+	if got[0].Name != "app" || got[0].Windows != 2 || !got[0].Attached {
+		t.Errorf("got %+v", got[0])
+	}
+}
+
+func TestListSessionsWithoutAServer(t *testing.T) {
+	f := &fakeRunner{errs: map[string]error{"list-sessions": errors.New("no server running")}}
+
+	got, err := ListSessions(context.Background(), f)
+	if err != nil {
+		t.Fatalf("no tmux server means no sessions, not an error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("want nil, got %+v", got)
+	}
+}
