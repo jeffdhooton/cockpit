@@ -275,6 +275,64 @@ hook inside Codex, its sessions stay on the guess.
 A waiting agent also appears first in the `cockpit_signals` tool, above a
 dead process.
 
+## Remote hosts
+
+Cockpit can watch and drive a second machine over SSH. Its tmux sessions and
+repos appear as tiles prefixed with the host name, and Enter on one brings the
+remote session and its processes up, then drops you into it.
+
+```toml
+[[hosts]]
+name = "mini"                      # an alias from ~/.ssh/config
+tmux = "/opt/homebrew/bin/tmux"    # absolute: a bare ssh gets no Homebrew PATH
+cockpit = "~/.local/bin/cockpit"   # optional, see below
+
+[[repos]]
+host = "mini"
+path = "~/workspace/docket"        # ~ is the remote user's, not yours
+label = "docket"
+```
+
+There is no SSH client inside cockpit. It runs your `ssh`, with ControlMaster
+so one connection per host carries every query, which means your config —
+`Include`, `IdentitiesOnly`, `ProxyJump`, host key checks — is honoured
+exactly as it would be at a prompt. A host that needs a passphrase or an
+unknown key fails fast rather than hanging the poll.
+
+**Jumping.** Enter on `mini/docket` creates the session on `mini`, starts its
+processes there, and switches you to a local tmux session named `mini` whose
+`docket` window is an `ssh -t … tmux new -A -s docket`. `prefix S` brings you
+back. The local session is a view: killing a window kills nothing remote, and
+the next Enter reattaches.
+
+**Unreachable.** When a host stops answering, its tiles keep their last-known
+state under `⚠ unreachable` and the poll backs off to a minute. Nothing is
+ever launched against a host in that state — a dropped link during a jump
+fails closed rather than starting a second dev server on a machine you cannot
+see.
+
+**Agent status on the remote box.** Install cockpit there too, run its
+daemon, and:
+
+```bash
+cockpit hook install --host mini
+```
+
+The remote hooks post to the remote daemon, the status lands in the remote
+tmux, and the same `list-sessions` that draws the tile reads it. No tunnel.
+
+### Hermes
+
+A Hermes gateway on the tailnet gets one read-only tile — gateway running or
+stopped, and which platforms are connected — from its dashboard's status
+endpoint, which needs no token. A stopped gateway also appears in Signals.
+
+```toml
+[[hermes]]
+label = "hermes"
+url = "http://100.96.45.73:9119"
+```
+
 ## How it works
 
 Cockpit is a single Go binary built with [Bubbletea](https://github.com/charmbracelet/bubbletea). It creates a tmux session and runs the TUI inside it. When you jump to another session, cockpit stays alive in the background. Run `cockpit` again to reattach.

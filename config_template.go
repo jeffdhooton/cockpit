@@ -43,6 +43,25 @@ inbox_file = "~/vault/inbox.md"
 # path = "~/workspace/another-project"
 # label = "another"
 
+# A machine reached over ssh. name is an alias from ~/.ssh/config; tmux is
+# the absolute path of tmux there, because a bare ssh gets no Homebrew PATH.
+# [[hosts]]
+# name = "mini"
+# tmux = "/opt/homebrew/bin/tmux"
+# cockpit = "~/.local/bin/cockpit"   # optional: enables cockpit hook install --host mini
+
+# A repo on that host. The path is left for the remote shell, so ~ is theirs.
+# [[repos]]
+# host = "mini"
+# path = "~/workspace/docket"
+# label = "docket"
+
+# A Hermes dashboard. Cockpit reads gateway health from /api/status, which
+# needs no token, and nothing else.
+# [[hermes]]
+# label = "hermes"
+# url = "http://100.96.45.73:9119"
+
 [github]
 # Enable GitHub PR and CI status checks (requires gh CLI)
 enabled = true
