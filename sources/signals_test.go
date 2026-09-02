@@ -226,3 +226,17 @@ func TestBlockedAgentSignalNeedsAReport(t *testing.T) {
 		t.Errorf("want no signal from an unreported status, got %+v", got)
 	}
 }
+
+func TestStoppedHermesSignalsButUnreachableDoesNot(t *testing.T) {
+	in := SignalInput{
+		Hermes: []HermesStatus{
+			{Label: "hermes", Reachable: true, Gateway: "stopped"},
+			{Label: "other", Reachable: false},
+		},
+		Now: time.Now(),
+	}
+	got := ComputeSignals(in)
+	if len(got) != 1 || got[0].Kind != SignalHermesDown || got[0].Subject != "hermes" {
+		t.Errorf("want one signal for the stopped gateway only, got %+v", got)
+	}
+}

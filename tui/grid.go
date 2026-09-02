@@ -30,6 +30,9 @@ type Target struct {
 	// data shown is last-known, and the tile says so.
 	Unreachable bool
 	Processes   []sources.ProcessInfo
+	// Hermes is set on the read-only tile for a Hermes gateway. It has no
+	// session, no repo, and no Enter action.
+	Hermes *sources.HermesStatus
 }
 
 // Running reports whether the target has a live tmux session behind it.
@@ -98,6 +101,7 @@ func BuildTargets(
 	repos []sources.GitRepoStatus,
 	statuses map[string]sources.AgentStatus,
 	selfSession string,
+	hermes ...sources.HermesStatus,
 ) []Target {
 	repoByKey := make(map[string]*sources.GitRepoStatus, len(repos))
 	for i := range repos {
@@ -136,7 +140,13 @@ func BuildTargets(
 	sort.Slice(running, func(i, j int) bool { return running[i].Key() < running[j].Key() })
 	sort.Slice(dormant, func(i, j int) bool { return dormant[i].Key() < dormant[j].Key() })
 
-	return append(running, dormant...)
+	// Hermes gateways sit after the live sessions and before the dormant
+	// repos: they are running things, not projects waiting to be opened.
+	out := append(running, make([]Target, 0, len(hermes))...)
+	for i := range hermes {
+		out = append(out, Target{Label: hermes[i].Label, Hermes: &hermes[i]})
+	}
+	return append(out, dormant...)
 }
 
 const (
@@ -230,7 +240,9 @@ func renderTile(t Target, width int, selected bool) string {
 	// Shape carries session existence: a hollow ring means there is nothing to
 	// attach to, while every live session keeps the filled status dot.
 	status := StatusRing("no session", VariantMuted)
-	if t.Unreachable {
+	if t.Hermes != nil {
+		status = hermesStatusLine(t.Hermes, inner)
+	} else if t.Unreachable {
 		// Last-known data under a warning, never a blank tile.
 		status = WarningText.Render("⚠ " + Truncate("unreachable", inner-2))
 	} else if t.Running() {
@@ -263,7 +275,10 @@ func renderTile(t Target, width int, selected bool) string {
 	}
 
 	git := ""
-	if t.Repo != nil {
+	if t.Hermes != nil && len(t.Hermes.Platforms) > 0 {
+		// The git line carries the connected platforms instead.
+		git = MutedText.Render(Truncate(strings.Join(t.Hermes.Platforms, " "), inner))
+	} else if t.Repo != nil {
 		if t.Repo.Error != nil {
 			git = WarningText.Render("git err")
 		} else {
@@ -419,7 +434,16 @@ func (m Model) gridTargets() []Target {
 		}
 	}
 
-	targets := BuildTargets(sessions, repos, statuses, m.config.General.SessionName)
+	var hermes []sources.HermesStatus
+	for _, h := range m.config.Hermes {
+		st, polled := m.hermes[h.Label]
+		if !polled {
+			st = sources.HermesStatus{Label: h.Label}
+		}
+		hermes = append(hermes, st)
+	}
+
+	targets := BuildTargets(sessions, repos, statuses, m.config.General.SessionName, hermes...)
 	for i := range targets {
 		if targets[i].Host == "" {
 			continue
@@ -522,6 +546,10 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	t := targets[idx]
 
+	// A Hermes tile is read-only: there is nothing to attach to.
+	if t.Hermes != nil {
+		return nil
+	}
 	if t.Host != "" {
 		return m.enterRemote(t)
 	}
@@ -541,6 +569,19 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	repo := m.repoForLabel(t.Label, t.Repo.Path)
 	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
+}
+
+// hermesStatusLine renders the gateway state: running in the accent colour,
+// any other reachable state as a warning, and unreachable as a dead link.
+func hermesStatusLine(h *sources.HermesStatus, inner int) string {
+	switch {
+	case !h.Reachable:
+		return WarningText.Render("⚠ " + Truncate("unreachable", inner-2))
+	case h.Gateway == "running":
+		return StatusDot("gateway", VariantAccent)
+	default:
+		return StatusDot(Truncate(h.Gateway, inner-2), VariantWarning)
+	}
 }
 
 // enterRemote jumps to a project on another host through a local view

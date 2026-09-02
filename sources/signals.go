@@ -17,6 +17,7 @@ type SignalKind string
 
 const (
 	SignalBlockedAgent SignalKind = "blocked_agent"
+	SignalHermesDown   SignalKind = "hermes_down"
 	SignalDeadProcess  SignalKind = "dead_process"
 	SignalFailingCI    SignalKind = "failing_ci"
 	SignalUnpushed     SignalKind = "unpushed"
@@ -38,6 +39,7 @@ type SignalInput struct {
 	Git       []GitRepoStatus
 	GitHub    *GitHubStatus
 	Processes map[string][]ProcessInfo
+	Hermes    []HermesStatus
 	Now       time.Time
 }
 
@@ -47,6 +49,7 @@ type SignalInput struct {
 func ComputeSignals(in SignalInput) []Signal {
 	var signals []Signal
 	signals = append(signals, blockedAgentSignals(in)...)
+	signals = append(signals, hermesDownSignals(in)...)
 	signals = append(signals, deadProcessSignals(in)...)
 	signals = append(signals, failingCISignals(in)...)
 	signals = append(signals, unpushedSignals(in)...)
@@ -131,6 +134,20 @@ func blockedAgentSignals(in SignalInput) []Signal {
 			Subject: s.Name,
 			Detail:  "waiting on you",
 		})
+	}
+	return out
+}
+
+// hermesDownSignals fires for a gateway that answered and said it is not
+// running. An unreachable dashboard is not a Hermes problem — the tailnet
+// being down is — and its tile already says unreachable.
+func hermesDownSignals(in SignalInput) []Signal {
+	var out []Signal
+	for _, h := range in.Hermes {
+		if !h.Reachable || h.Gateway == "running" {
+			continue
+		}
+		out = append(out, Signal{Kind: SignalHermesDown, Subject: h.Label, Detail: "gateway " + h.Gateway})
 	}
 	return out
 }

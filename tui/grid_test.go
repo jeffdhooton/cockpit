@@ -713,3 +713,39 @@ func TestRenderTileShowsUnreachableOverLastKnownData(t *testing.T) {
 		t.Errorf("last-known branch must still show:\n%s", out)
 	}
 }
+
+func hermesTarget(st sources.HermesStatus) Target {
+	st.Label = "hermes"
+	return Target{Label: "hermes", Hermes: &st}
+}
+
+func TestRenderTileHermesRunning(t *testing.T) {
+	out := renderTile(hermesTarget(sources.HermesStatus{Reachable: true, Gateway: "running", Platforms: []string{"photon", "slack"}}), 22, false)
+	if !strings.Contains(out, "gateway") || !strings.Contains(out, "photon") {
+		t.Errorf("want gateway state and platforms:\n%s", out)
+	}
+}
+
+func TestRenderTileHermesStoppedAndUnreachableDiffer(t *testing.T) {
+	stopped := renderTile(hermesTarget(sources.HermesStatus{Reachable: true, Gateway: "stopped"}), 22, false)
+	down := renderTile(hermesTarget(sources.HermesStatus{Reachable: false}), 22, false)
+	if !strings.Contains(stopped, "stopped") {
+		t.Errorf("stopped must say stopped:\n%s", stopped)
+	}
+	if !strings.Contains(down, "unreachable") {
+		t.Errorf("unreachable must say unreachable:\n%s", down)
+	}
+}
+
+func TestBuildTargetsPlacesHermesAfterRunningBeforeDormant(t *testing.T) {
+	targets := BuildTargets(
+		[]sources.TmuxSession{sess("zzz-running")},
+		[]sources.GitRepoStatus{repo("aaa-dormant")},
+		nil, "cockpit",
+		sources.HermesStatus{Label: "hermes", Reachable: true, Gateway: "running"})
+
+	got := labels(targets)
+	if len(got) != 3 || got[0] != "zzz-running" || got[1] != "hermes" || got[2] != "aaa-dormant" {
+		t.Errorf("order = %v", got)
+	}
+}

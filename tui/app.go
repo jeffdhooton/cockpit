@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -178,15 +179,16 @@ type Model struct {
 	gridCursor string // label of the selected target; survives list churn
 	gridIndex  int    // last resolved index, a fallback when the label is gone
 
-	sessions       SessionsModel
-	repos          ReposModel
-	tasks          TasksModel
-	inbox          InboxModel
-	viz            VizModel
-	github         *sources.GitHubStatus
-	processes      map[string][]sources.ProcessInfo // repo label → configured process state
-	hosts          map[string]hostState             // remote host → last poll and link state
-	sessionPreview string
+	sessions           SessionsModel
+	repos              ReposModel
+	tasks              TasksModel
+	inbox              InboxModel
+	viz                VizModel
+	github             *sources.GitHubStatus
+	processes          map[string][]sources.ProcessInfo // repo label → configured process state
+	hosts              map[string]hostState             // remote host → last poll and link state
+	hermes             map[string]sources.HermesStatus  // hermes label → last status
+	sessionPreview     string
 	lastPreviewSession string
 
 	transientErr   string
@@ -240,13 +242,23 @@ func NewModel(cfg *config.Config, configPath string) Model {
 // Message types for source data
 type (
 	tmuxDataMsg    struct{ Sessions []sources.TmuxSession }
+	hermesDataMsg  struct{ Status sources.HermesStatus }
+	hermesTickMsg  struct{ Label string }
 	gitDataMsg     struct{ Repos []sources.GitRepoStatus }
 	tasksDataMsg   struct{ Tasks []sources.Task }
 	inboxDataMsg   struct{ Items []sources.Task }
-	githubDataMsg    struct{ Status *sources.GitHubStatus }
-	processDataMsg   struct{ ByLabel map[string][]sources.ProcessInfo }
-	sourceErrMsg     struct{ Source string; Err error }
-	previewDataMsg      struct{ Content string; Session string }
+	githubDataMsg  struct{ Status *sources.GitHubStatus }
+	processDataMsg struct {
+		ByLabel map[string][]sources.ProcessInfo
+	}
+	sourceErrMsg struct {
+		Source string
+		Err    error
+	}
+	previewDataMsg struct {
+		Content string
+		Session string
+	}
 	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
 	localTickMsg        struct{}
 	remoteTickMsg       struct{}
@@ -267,7 +279,28 @@ func (m Model) Init() tea.Cmd {
 		m.remoteTick(),
 		m.vizTick(),
 		m.fetchHosts(),
+		m.fetchHermes(),
 	)
+}
+
+// fetchHermes polls every configured Hermes dashboard.
+func (m Model) fetchHermes() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, h := range m.config.Hermes {
+		cmds = append(cmds, m.fetchOneHermes(h))
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m Model) fetchOneHermes(h config.HermesConfig) tea.Cmd {
+	return func() tea.Msg {
+		return hermesDataMsg{Status: sources.GetHermesStatus(context.Background(), http.DefaultClient, h)}
+	}
+}
+
+func (m Model) hermesTick(h config.HermesConfig) tea.Cmd {
+	d := time.Duration(h.RefreshInterval) * time.Second
+	return tea.Tick(d, func(time.Time) tea.Msg { return hermesTickMsg{Label: h.Label} })
 }
 
 // fetchHosts starts a poll of every configured remote host.
@@ -375,6 +408,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.hosts[msg.Host] = mergeHost(m.hosts[msg.Host], msg.hostPoll)
 		if h, ok := m.config.Host(msg.Host); ok {
 			cmds = append(cmds, m.hostTick(h))
+		}
+
+	case hermesDataMsg:
+		if m.hermes == nil {
+			m.hermes = map[string]sources.HermesStatus{}
+		}
+		m.hermes[msg.Status.Label] = msg.Status
+		for _, h := range m.config.Hermes {
+			if h.Label == msg.Status.Label {
+				cmds = append(cmds, m.hermesTick(h))
+			}
+		}
+
+	case hermesTickMsg:
+		for _, h := range m.config.Hermes {
+			if h.Label == msg.Label {
+				cmds = append(cmds, m.fetchOneHermes(h))
+			}
 		}
 
 	case hostTickMsg:
@@ -844,7 +895,6 @@ func (m *Model) cursorDown() {
 		m.inbox.CursorDown()
 	}
 }
-
 
 // dashboardView renders the five-panel layout: sessions and preview, projects
 // and today, notes and the visualizer.
