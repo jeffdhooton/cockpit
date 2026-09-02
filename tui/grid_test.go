@@ -111,8 +111,9 @@ func TestGridCols(t *testing.T) {
 		{20, 1},  // 24-col terminal, the narrow floor
 		{40, 2},  // 44-col terminal, Termius vertical
 		{66, 3},  // 70-col terminal
-		{116, 4}, // 120-col terminal, capped
-		{196, 4}, // 200-col terminal, capped
+		{116, 5}, // 120-col terminal
+		{196, 7}, // 200-col terminal
+		{336, 12}, // 340-col ultrawide: columns grow instead of tiles stretching
 	}
 	for _, c := range cases {
 		if got := GridCols(c.contentWidth); got != c.want {
@@ -843,4 +844,57 @@ func TestHermesShellRepoLandsInHome(t *testing.T) {
 	if got.Label != want.Label || got.Host != want.Host || got.Path != want.Path {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
+}
+
+func TestGridColsCapsTileWidth(t *testing.T) {
+	// Width beyond a readable tile should buy more tiles, not wider ones. A
+	// 4-column cap on an ultrawide terminal produced 83-column boxes holding
+	// twenty-odd characters each.
+	for _, w := range []int{80, 120, 200, 336, 500} {
+		cols := GridCols(w)
+		cell := w / cols
+		if cell > gridMaxCellWidth {
+			t.Errorf("width %d: %d columns gives %d-wide tiles, want at most %d",
+				w, cols, cell, gridMaxCellWidth)
+		}
+		if cell < gridCellWidth {
+			t.Errorf("width %d: %d columns gives %d-wide tiles, below the legible floor %d",
+				w, cols, cell, gridCellWidth)
+		}
+	}
+}
+
+func TestGridColsKeepsNarrowTerminalsUsable(t *testing.T) {
+	// The phone-over-ssh case: one column, never a tile too narrow to read.
+	for _, w := range []int{18, 20, 30} {
+		if got := GridCols(w); got != 1 {
+			t.Errorf("GridCols(%d) = %d, want 1 — a narrow terminal gets one column", w, got)
+		}
+	}
+}
+
+func TestRenderGridLeavesNoRaggedGap(t *testing.T) {
+	// Tiles are capped, but the row should still span the content width so the
+	// panel's right border does not float away from the last tile.
+	const w = 336
+	out := RenderGrid(probeGridTargets(24), 0, w, 20)
+	for i, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "▼") {
+			continue
+		}
+		if got := lipgloss.Width(line); got != w {
+			t.Errorf("row %d is %d wide, want %d", i, got, w)
+			break
+		}
+	}
+}
+
+func probeGridTargets(n int) []Target {
+	var out []Target
+	for i := 0; i < n; i++ {
+		s := &sources.TmuxSession{Name: "s", Windows: 1}
+		out = append(out, Target{Label: "s", Session: s,
+			Repo: &sources.GitRepoStatus{Label: "s", Branch: "main"}})
+	}
+	return out
 }

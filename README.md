@@ -27,7 +27,7 @@ A tmux-native terminal dashboard for developers juggling multiple projects. One 
 
 ## What it does
 
-- **Grid** — Running tmux sessions and saved repos as one grid. `hjkl` to move, Enter to jump; a dormant repo gets a session created on the spot. The grid reflows from 4 columns down to 1, so it stays usable over SSH from a phone.
+- **Grid** — Running tmux sessions and saved repos as one grid. `hjkl` to move, Enter to jump; a dormant repo gets a session created on the spot. The grid packs in as many tiles as fit — a dozen across on an ultrawide, down to one on a phone over SSH. Tiles stay a readable width; extra room buys more of them rather than wider ones.
 - **Dashboard** — Press `d` for the full five-panel view below. Set `default_view = "dashboard"` in config.toml to make it the startup view.
 - **Sessions** — See all running tmux sessions. Press Enter to jump to one, or auto-create a new session from a repo.
 - **Repos** — Git status across all your projects: branch, dirty/clean, unpushed commits, last commit message.

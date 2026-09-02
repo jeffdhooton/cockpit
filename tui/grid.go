@@ -173,9 +173,12 @@ const (
 	// GridCols is measured against the grid's content width, not the terminal's,
 	// so this budget excludes the enclosing panel's own border and padding.
 	gridCellWidth = 18
-	// gridMaxCols caps the grid. An 8-wide grid on a 200-column terminal is too
-	// sparse to scan, and the width is better spent on the preview.
-	gridMaxCols = 4
+	// gridMaxCellWidth caps how wide one tile gets. Past this a tile is mostly
+	// empty padding — a tile holds a label, a status and a branch, and none of
+	// them grow. Extra terminal width therefore buys more columns rather than
+	// wider ones: capping columns instead produced 83-column boxes holding
+	// twenty-odd characters each on an ultrawide screen.
+	gridMaxCellWidth = 28
 	// gridTileH is a tile's total height: 3 content lines + 2 border rows.
 	gridTileH = 5
 
@@ -186,14 +189,22 @@ const (
 	MinTerminalWidth = 24
 )
 
-// GridCols returns the column count for a given terminal width.
+// GridCols returns the column count for a given terminal width: enough columns
+// that no tile exceeds gridMaxCellWidth, but never so many that one falls below
+// the legible floor. Rows still span the full width, so the right edge stays
+// flush with the panel border.
 func GridCols(width int) int {
-	cols := width / gridCellWidth
-	if cols < 1 {
+	legible := width / gridCellWidth
+	if legible < 1 {
 		return 1
 	}
-	if cols > gridMaxCols {
-		return gridMaxCols
+	// Round up, so the widest tile lands at or under the cap.
+	cols := (width + gridMaxCellWidth - 1) / gridMaxCellWidth
+	if cols > legible {
+		cols = legible
+	}
+	if cols < 1 {
+		return 1
 	}
 	return cols
 }
