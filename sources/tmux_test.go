@@ -152,3 +152,24 @@ func TestParseSessionsCarriesHostAndView(t *testing.T) {
 		t.Errorf("remote parse must stamp the host, got %+v", remote[0])
 	}
 }
+
+func TestRemoteStalenessUsesTheRemoteClock(t *testing.T) {
+	// The status was stamped five minutes ago on mini's clock. The Mac's clock
+	// is twenty minutes ahead of mini's. Judged locally the status would be
+	// twenty-five minutes old and silently discarded; judged remotely it is
+	// fresh.
+	remoteNow := time.Unix(1788250998, 0)
+	stamped := remoteNow.Add(-5 * time.Minute).Unix()
+	localNow := remoteNow.Add(20 * time.Minute)
+
+	line := "docket|1|0||working|" + strconv.FormatInt(stamped, 10) + "|zsh|\n"
+
+	byRemote, _ := parseTmuxOutput(line, "mini", remoteNow)
+	if !byRemote[0].StatusReported {
+		t.Error("five minutes old on the remote clock is fresh")
+	}
+	byLocal, _ := parseTmuxOutput(line, "mini", localNow)
+	if byLocal[0].StatusReported {
+		t.Error("judged by the skewed local clock the same status reads stale, which is the bug the remote clock prevents")
+	}
+}
