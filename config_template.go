@@ -57,10 +57,12 @@ inbox_file = "~/vault/inbox.md"
 # label = "docket"
 
 # A Hermes dashboard. Cockpit reads gateway health from /api/status, which
-# needs no token, and nothing else.
+# needs no token. With host set to a [[hosts]] entry, Enter on the tile opens
+# a shell on that machine; without it the tile is read-only.
 # [[hermes]]
 # label = "hermes"
 # url = "http://100.96.45.73:9119"
+# host = "mini"
 
 [github]
 # Enable GitHub PR and CI status checks (requires gh CLI)

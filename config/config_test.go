@@ -480,3 +480,18 @@ func TestObsidianIsOptional(t *testing.T) {
 		t.Error("a today_file alone enables capture")
 	}
 }
+
+func TestHermesHostMustBeDeclared(t *testing.T) {
+	base := "[obsidian]\nvault_path = \"/v\"\n"
+	undeclared := base + "[[hermes]]\nlabel = \"hermes\"\nurl = \"http://x:1\"\nhost = \"mini\"\n"
+	if err := loadErr(t, undeclared); err == nil {
+		t.Error("a hermes host not under [[hosts]] must fail at load")
+	}
+
+	declared := base + "[[hosts]]\nname = \"mini\"\ntmux = \"/opt/homebrew/bin/tmux\"\n" +
+		"[[hermes]]\nlabel = \"hermes\"\nurl = \"http://x:1\"\nhost = \"mini\"\n"
+	cfg := writeAndLoad(t, declared)
+	if cfg.Hermes[0].Host != "mini" {
+		t.Errorf("host = %q, want mini", cfg.Hermes[0].Host)
+	}
+}

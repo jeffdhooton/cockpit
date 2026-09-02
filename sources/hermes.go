@@ -23,6 +23,7 @@ const hermesBodyLimit = 64 << 10
 // Unreachable and stopped are different facts and render differently.
 type HermesStatus struct {
 	Label     string
+	Host      string // the [[hosts]] entry Enter opens a shell on, or empty
 	Reachable bool
 	Gateway   string   // "running", "stopped", or the raw gateway_state
 	Platforms []string // connected platform names, sorted
@@ -44,7 +45,7 @@ type hermesDocument struct {
 // GetHermesStatus reads the dashboard's status endpoint. It needs no token
 // and sends none.
 func GetHermesStatus(ctx context.Context, client *http.Client, cfg config.HermesConfig) HermesStatus {
-	st := HermesStatus{Label: cfg.Label}
+	st := HermesStatus{Label: cfg.Label, Host: cfg.Host}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

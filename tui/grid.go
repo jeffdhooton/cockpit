@@ -30,8 +30,9 @@ type Target struct {
 	// data shown is last-known, and the tile says so.
 	Unreachable bool
 	Processes   []sources.ProcessInfo
-	// Hermes is set on the read-only tile for a Hermes gateway. It has no
-	// session, no repo, and no Enter action.
+	// Hermes is set on the tile for a Hermes gateway. It has no repo. With a
+	// Host, Enter opens a shell on that machine and the shell's tmux session
+	// is folded into this tile; without one the tile is read-only.
 	Hermes *sources.HermesStatus
 }
 
@@ -39,8 +40,10 @@ type Target struct {
 func (t Target) Running() bool { return t.Session != nil }
 
 // Key identifies the target across hosts: host/label remotely, label locally.
+// A Hermes tile is keyed by its label alone: it is named for the gateway, not
+// for the machine it happens to run on.
 func (t Target) Key() string {
-	if t.Host == "" {
+	if t.Host == "" || t.Hermes != nil {
 		return t.Label
 	}
 	return t.Host + "/" + t.Label
@@ -108,6 +111,19 @@ func BuildTargets(
 		repoByKey[repos[i].Key()] = &repos[i]
 	}
 
+	// A Hermes tile with a host owns the remote session Enter creates for its
+	// shell, so that session is folded into the tile instead of becoming a
+	// second one. Keyed by host/label, so a local session of the same name
+	// stays a separate target.
+	hermesByKey := make(map[string]*Target, len(hermes))
+	hermesTargets := make([]Target, len(hermes))
+	for i := range hermes {
+		hermesTargets[i] = Target{Label: hermes[i].Label, Host: hermes[i].Host, Hermes: &hermes[i]}
+		if hermes[i].Host != "" {
+			hermesByKey[hermes[i].Host+"/"+hermes[i].Label] = &hermesTargets[i]
+		}
+	}
+
 	var running, dormant []Target
 	live := make(map[string]bool, len(sessions))
 
@@ -116,6 +132,12 @@ func BuildTargets(
 		// Cockpit's own session is excluded on every host, and so is a local
 		// view session that exists only to hold ssh windows onto a remote.
 		if s.Name == selfSession || s.ViewOf != "" {
+			continue
+		}
+		if h, ok := hermesByKey[s.Key()]; ok {
+			h.Session = s
+			h.Status = statuses[s.Key()]
+			h.StatusReported = s.StatusReported
 			continue
 		}
 		live[s.Key()] = true
@@ -142,10 +164,7 @@ func BuildTargets(
 
 	// Hermes gateways sit after the live sessions and before the dormant
 	// repos: they are running things, not projects waiting to be opened.
-	out := append(running, make([]Target, 0, len(hermes))...)
-	for i := range hermes {
-		out = append(out, Target{Label: hermes[i].Label, Hermes: &hermes[i]})
-	}
+	out := append(running, hermesTargets...)
 	return append(out, dormant...)
 }
 
@@ -440,6 +459,7 @@ func (m Model) gridTargets() []Target {
 		if !polled {
 			st = sources.HermesStatus{Label: h.Label}
 		}
+		st.Host = h.Host
 		hermes = append(hermes, st)
 	}
 
@@ -546,9 +566,10 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	t := targets[idx]
 
-	// A Hermes tile is read-only: there is nothing to attach to.
+	// A Hermes tile opens a shell on its host. Without a host it is
+	// read-only: there is nothing to attach to.
 	if t.Hermes != nil {
-		return nil
+		return m.enterHermes(t)
 	}
 	if t.Host != "" {
 		return m.enterRemote(t)
@@ -600,6 +621,32 @@ func (m *Model) enterRemote(t Target) tea.Cmd {
 		}
 		repo = config.RepoConfig{Host: t.Host, Label: t.Label}
 	}
+	return jumpRemoteCmd(host, repo)
+}
+
+// enterHermes opens a shell on the gateway's host: a remote tmux session named
+// for the tile, reached through the same view window a remote project uses.
+// Hermes itself runs under launchd, not tmux, so there is no session of its
+// own to attach to; this is the box, not the process.
+func (m *Model) enterHermes(t Target) tea.Cmd {
+	if t.Host == "" {
+		return nil
+	}
+	host, ok := m.config.Host(t.Host)
+	if !ok {
+		return nil
+	}
+	return jumpRemoteCmd(host, hermesShellRepo(config.HermesConfig{Label: t.Label, Host: t.Host}))
+}
+
+// hermesShellRepo describes the shell session as a repo with no processes,
+// so the remote jump can create and attach it. It starts in the remote home
+// directory, which the remote shell expands.
+func hermesShellRepo(h config.HermesConfig) config.RepoConfig {
+	return config.RepoConfig{Label: h.Label, Host: h.Host, Path: "~"}
+}
+
+func jumpRemoteCmd(host config.HostConfig, repo config.RepoConfig) tea.Cmd {
 	return func() tea.Msg {
 		local := sources.DefaultRunner()
 		remote := sources.SSHRunner{Host: host.Name, Tmux: host.Tmux}

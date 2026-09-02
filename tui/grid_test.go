@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jhoot/cockpit/config"
 	"github.com/jhoot/cockpit/sources"
 )
 
@@ -747,5 +748,99 @@ func TestBuildTargetsPlacesHermesAfterRunningBeforeDormant(t *testing.T) {
 	got := labels(targets)
 	if len(got) != 3 || got[0] != "zzz-running" || got[1] != "hermes" || got[2] != "aaa-dormant" {
 		t.Errorf("order = %v", got)
+	}
+}
+
+func TestHermesTargetKeyIsItsLabelEvenWithHost(t *testing.T) {
+	// The tile is named for the gateway, not the host: "hermes", never
+	// "mini/hermes". The grid cursor is keyed by label, so this also keeps
+	// the folded session from creating a second cursor slot.
+	st := sources.HermesStatus{Label: "hermes", Host: "mini"}
+	tg := Target{Label: "hermes", Host: "mini", Hermes: &st}
+	if tg.Key() != "hermes" || tg.Name() != "hermes" {
+		t.Errorf("key = %q, name = %q, want hermes", tg.Key(), tg.Name())
+	}
+}
+
+func TestBuildTargetsFoldsHermesShellSessionIntoItsTile(t *testing.T) {
+	// Entering the hermes tile creates a remote tmux session named after it.
+	// On the next poll that session must not surface as a second tile.
+	s := sess("hermes")
+	s.Host = "mini"
+	s.StatusReported = true
+	targets := BuildTargets(
+		[]sources.TmuxSession{s, sess("zzz-running")},
+		[]sources.GitRepoStatus{repo("aaa-dormant")},
+		map[string]sources.AgentStatus{"mini/hermes": sources.AgentStatusWorking}, "cockpit",
+		sources.HermesStatus{Label: "hermes", Host: "mini", Reachable: true, Gateway: "running"})
+
+	got := labels(targets)
+	if len(got) != 3 || got[0] != "zzz-running" || got[1] != "hermes" || got[2] != "aaa-dormant" {
+		t.Fatalf("order = %v", got)
+	}
+	h := targets[1]
+	if h.Hermes == nil || h.Host != "mini" {
+		t.Errorf("hermes tile lost its status or host: %+v", h)
+	}
+	if !h.Running() || h.Session.Host != "mini" {
+		t.Errorf("hermes tile should carry the folded session: %+v", h.Session)
+	}
+	if h.Status != sources.AgentStatusWorking || !h.StatusReported {
+		t.Errorf("folded session status not carried: %+v", h)
+	}
+}
+
+func TestBuildTargetsDoesNotFoldLocalSessionIntoHostlessHermes(t *testing.T) {
+	// A local session that happens to share the label is a different thing.
+	targets := BuildTargets(
+		[]sources.TmuxSession{sess("hermes")}, nil, nil, "cockpit",
+		sources.HermesStatus{Label: "hermes", Reachable: true, Gateway: "running"})
+	if got := labels(targets); len(got) != 2 {
+		t.Errorf("want the session and the tile as separate targets, got %v", got)
+	}
+}
+
+func TestGridEnterOnHermesTileWithHostOpensShell(t *testing.T) {
+	m := gridTestModel(120, 40)
+	m.config.Hosts = []config.HostConfig{{Name: "mini", Tmux: "/opt/homebrew/bin/tmux"}}
+	m.config.Hermes = []config.HermesConfig{{Label: "hermes", URL: "http://x:1", Host: "mini"}}
+
+	targets := m.gridTargets()
+	idx := -1
+	for i, tg := range targets {
+		if tg.Hermes != nil {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatal("setup: no hermes tile")
+	}
+	if cmd := m.enterTarget(targets, idx); cmd == nil {
+		t.Error("Enter on a hermes tile with a host should return a jump cmd")
+	}
+}
+
+func TestGridEnterOnHermesTileWithoutHostDoesNothing(t *testing.T) {
+	m := gridTestModel(120, 40)
+	m.config.Hermes = []config.HermesConfig{{Label: "hermes", URL: "http://x:1"}}
+
+	targets := m.gridTargets()
+	for i, tg := range targets {
+		if tg.Hermes == nil {
+			continue
+		}
+		if cmd := m.enterTarget(targets, i); cmd != nil {
+			t.Error("a hermes tile with no host has nowhere to go")
+		}
+		return
+	}
+	t.Fatal("setup: no hermes tile")
+}
+
+func TestHermesShellRepoLandsInHome(t *testing.T) {
+	got := hermesShellRepo(config.HermesConfig{Label: "hermes", Host: "mini"})
+	want := config.RepoConfig{Label: "hermes", Host: "mini", Path: "~"}
+	if got.Label != want.Label || got.Host != want.Host || got.Path != want.Path {
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

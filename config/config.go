@@ -86,10 +86,13 @@ type HostConfig struct {
 }
 
 // HermesConfig is a Hermes dashboard whose status endpoint answers without a
-// token. Cockpit reads gateway health from it and nothing else.
+// token. Cockpit reads gateway health from it. When Host names a [[hosts]]
+// entry, Enter on the tile opens a shell on that machine; otherwise the tile
+// is read-only.
 type HermesConfig struct {
 	Label           string `toml:"label"`
 	URL             string `toml:"url"`
+	Host            string `toml:"host"`
 	RefreshInterval int    `toml:"refresh_interval"`
 }
 
@@ -356,6 +359,11 @@ func validateHosts(cfg *Config) error {
 	for _, r := range cfg.Repos {
 		if r.Host != "" && !seen[r.Host] {
 			return fmt.Errorf("config: repo %q names host %q, which is not declared under [[hosts]]", r.Label, r.Host)
+		}
+	}
+	for _, h := range cfg.Hermes {
+		if h.Host != "" && !seen[h.Host] {
+			return fmt.Errorf("config: hermes %q names host %q, which is not declared under [[hosts]]", h.Label, h.Host)
 		}
 	}
 	return nil

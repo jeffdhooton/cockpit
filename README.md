@@ -328,15 +328,22 @@ tmux, and the same `list-sessions` that draws the tile reads it. No tunnel.
 
 ### Hermes
 
-A Hermes gateway on the tailnet gets one read-only tile — gateway running or
-stopped, and which platforms are connected — from its dashboard's status
-endpoint, which needs no token. A stopped gateway also appears in Signals.
+A Hermes gateway on the tailnet gets one tile — gateway running or stopped,
+and which platforms are connected — from its dashboard's status endpoint,
+which needs no token. A stopped gateway also appears in Signals.
 
 ```toml
 [[hermes]]
 label = "hermes"
 url = "http://100.96.45.73:9119"
+host = "mini"   # optional: a [[hosts]] entry
 ```
+
+With `host` set, Enter opens a shell on that machine: a remote tmux session
+named for the tile, starting in the remote home directory, reached through
+the same view window a remote project uses. Hermes itself runs under
+launchd rather than tmux, so this is the box, not the process. Without
+`host` the tile is read-only.
 
 ## How it works
 

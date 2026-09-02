@@ -90,3 +90,14 @@ func TestHermesStatusBoundsTheBody(t *testing.T) {
 		t.Errorf("got %+v", got)
 	}
 }
+
+func TestGetHermesStatusCarriesHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(hermesFixture))
+	}))
+	defer srv.Close()
+	got := GetHermesStatus(context.Background(), srv.Client(), config.HermesConfig{Label: "hermes", URL: srv.URL, Host: "mini"})
+	if got.Host != "mini" {
+		t.Errorf("host = %q, want mini", got.Host)
+	}
+}
