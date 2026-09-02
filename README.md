@@ -266,11 +266,14 @@ the more sessions report, the cheaper the refresh gets. A status older than ten
 minutes is treated as stale and falls back to the guess, so a crashed agent
 cannot stay "working" forever.
 
-**Codex needs one more step.** Codex leaves a newly installed hook untrusted
-and does not run it until you approve it, and trust is pinned to a hash of the
-hook's configuration — editing the command untrusts it again. `hook install`
-reads back what it wrote and tells you which it found. Until you approve the
-hook inside Codex, its sessions stay on the guess.
+**Codex trust is handled for you.** Codex leaves a newly installed hook
+untrusted and does not run it until approved, and trust is pinned to a hash
+of the hook's configuration — editing the command untrusts it again. `hook
+install` finishes the job the way Codex's own approve action would, by
+recording that hash through `codex app-server`, and reports `trusted N
+hooks; they are live`. Only cockpit's own hooks are ever trusted. If Codex
+cannot be started the install says so and the hooks stay inferred until you
+approve them inside Codex.
 
 A waiting agent also appears first in the `cockpit_signals` tool, above a
 dead process.
