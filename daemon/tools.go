@@ -203,7 +203,7 @@ func (t *Tools) gitStatus(ctx context.Context, args map[string]any) (any, error)
 		repos = []config.RepoConfig{repo}
 	}
 
-	statuses := sources.GetGitStatus(ctx, repos)
+	statuses := sources.GetGitStatus(ctx, sources.LocalCommandRunner{}, repos)
 
 	type status struct {
 		Label      string `json:"label"`
@@ -253,7 +253,7 @@ func (t *Tools) signals(ctx context.Context) (any, error) {
 	in := sources.SignalInput{
 		Config:    t.Cfg.Signals,
 		Sessions:  sessions,
-		Git:       sources.GetGitStatus(ctx, t.Cfg.Repos),
+		Git:       sources.GetGitStatus(ctx, sources.LocalCommandRunner{}, t.Cfg.Repos),
 		Processes: processes,
 		Now:       t.Now(),
 	}

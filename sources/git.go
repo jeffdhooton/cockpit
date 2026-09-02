@@ -11,8 +11,28 @@ import (
 	"github.com/jhoot/cockpit/config"
 )
 
+// CommandRunner runs a program in a directory and returns its stdout. Git
+// goes through it so a repo on another machine is the same code down a
+// different pipe.
+type CommandRunner interface {
+	RunIn(ctx context.Context, dir, name string, args ...string) (string, error)
+}
+
+// LocalCommandRunner runs commands on this machine.
+type LocalCommandRunner struct{}
+
+func (LocalCommandRunner) RunIn(ctx context.Context, dir, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // GetGitStatus fetches git status for all configured repos in parallel.
-func GetGitStatus(ctx context.Context, repos []config.RepoConfig) []GitRepoStatus {
+func GetGitStatus(ctx context.Context, cr CommandRunner, repos []config.RepoConfig) []GitRepoStatus {
 	results := make([]GitRepoStatus, len(repos))
 	var wg sync.WaitGroup
 
@@ -20,7 +40,7 @@ func GetGitStatus(ctx context.Context, repos []config.RepoConfig) []GitRepoStatu
 		wg.Add(1)
 		go func(idx int, r config.RepoConfig) {
 			defer wg.Done()
-			results[idx] = fetchOneRepo(ctx, r)
+			results[idx] = fetchOneRepo(ctx, cr, r)
 		}(i, repo)
 	}
 
@@ -28,13 +48,17 @@ func GetGitStatus(ctx context.Context, repos []config.RepoConfig) []GitRepoStatu
 	return results
 }
 
-func fetchOneRepo(ctx context.Context, repo config.RepoConfig) GitRepoStatus {
+func fetchOneRepo(ctx context.Context, cr CommandRunner, repo config.RepoConfig) GitRepoStatus {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	status := GitRepoStatus{
 		Label: repo.Label,
+		Host:  repo.Host,
 		Path:  repo.Path,
+	}
+	gitCommand := func(ctx context.Context, dir string, args ...string) (string, error) {
+		return cr.RunIn(ctx, dir, "git", args...)
 	}
 
 	// Branch
@@ -73,16 +97,6 @@ func fetchOneRepo(ctx context.Context, repo config.RepoConfig) GitRepoStatus {
 	}
 
 	return status
-}
-
-func gitCommand(ctx context.Context, repoPath string, args ...string) (string, error) {
-	fullArgs := append([]string{"-C", repoPath}, args...)
-	cmd := exec.CommandContext(ctx, "git", fullArgs...)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
 }
 
 // parsePorcelainCount counts non-empty lines in git status --porcelain output.

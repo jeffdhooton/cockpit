@@ -79,7 +79,7 @@ func TestGetGitStatusIntegration(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("dirty\n"), 0644)
 
 	repos := []config.RepoConfig{{Path: dir, Label: "test-repo"}}
-	results := GetGitStatus(context.Background(), repos)
+	results := GetGitStatus(context.Background(), LocalCommandRunner{}, repos)
 
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
@@ -107,11 +107,61 @@ func TestGetGitStatusIntegration(t *testing.T) {
 
 func TestGetGitStatusInvalidPath(t *testing.T) {
 	repos := []config.RepoConfig{{Path: "/nonexistent/repo", Label: "bad"}}
-	results := GetGitStatus(context.Background(), repos)
+	results := GetGitStatus(context.Background(), LocalCommandRunner{}, repos)
 	if len(results) != 1 {
 		t.Fatalf("got %d results, want 1", len(results))
 	}
 	if results[0].Error == nil {
 		t.Error("expected error for invalid path")
+	}
+}
+
+// fakeCommandRunner records every RunIn call and answers from a script keyed
+// by the git subcommand.
+type fakeCommandRunner struct {
+	calls   [][]string // dir, name, args...
+	outputs map[string]string
+}
+
+func (f *fakeCommandRunner) RunIn(_ context.Context, dir, name string, args ...string) (string, error) {
+	f.calls = append(f.calls, append([]string{dir, name}, args...))
+	if len(args) > 0 {
+		if out, ok := f.outputs[args[0]]; ok {
+			return out, nil
+		}
+	}
+	return "", nil
+}
+
+func TestFetchOneRepoGoesThroughTheCommandRunner(t *testing.T) {
+	f := &fakeCommandRunner{outputs: map[string]string{
+		"rev-parse": "main\n",
+		"status":    " M a.go\n?? b.go\n",
+	}}
+	repo := config.RepoConfig{Host: "mini", Path: "~/workspace/docket", Label: "docket"}
+
+	got := fetchOneRepo(context.Background(), f, repo)
+
+	if got.Host != "mini" || got.Branch != "main" || got.DirtyCount != 2 {
+		t.Errorf("got %+v", got)
+	}
+	if len(f.calls) == 0 || f.calls[0][0] != "~/workspace/docket" || f.calls[0][1] != "git" {
+		t.Errorf("first call must run git in the repo's own path, got %v", f.calls)
+	}
+}
+
+func TestSSHRunnerRunInChangesDirectoryFirst(t *testing.T) {
+	r := SSHRunner{Host: "mini", Tmux: "/usr/bin/tmux"}
+	// RunIn goes through RunShell; capture the script by inspecting argv.
+	script := "cd -- ~/'workspace/docket' && 'git' 'status' '--porcelain'"
+	got := r.argv(script)
+	if got[len(got)-1] != script {
+		t.Fatalf("argv tail = %q", got[len(got)-1])
+	}
+	if q := quoteRemotePath("~/workspace/docket"); q != "~/'workspace/docket'" {
+		t.Errorf("a leading ~ must stay unquoted so the remote shell expands it, got %s", q)
+	}
+	if q := quoteRemotePath("/abs/path with space"); q != "'/abs/path with space'" {
+		t.Errorf("an absolute path is quoted whole, got %s", q)
 	}
 }

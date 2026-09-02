@@ -995,7 +995,7 @@ func (m Model) fetchTmux() tea.Cmd {
 func (m Model) fetchGit() tea.Cmd {
 	repos := m.config.Repos
 	return func() tea.Msg {
-		results := sources.GetGitStatus(context.Background(), repos)
+		results := sources.GetGitStatus(context.Background(), sources.LocalCommandRunner{}, repos)
 		return gitDataMsg{Repos: results}
 	}
 }

@@ -18,6 +18,7 @@ type TmuxSession struct {
 // GitRepoStatus represents the git status of a single repository.
 type GitRepoStatus struct {
 	Label      string
+	Host       string // empty means local
 	Path       string
 	Branch     string
 	Dirty      bool

@@ -132,7 +132,7 @@ func (r SSHRunner) controlDir() string {
 // ssh exits 255 for transport problems and passes the remote exit status
 // through otherwise.
 func classifySSHError(err error, stderr []byte) error {
-	msg := strings.TrimSpace(string(stderr))
+	msg := remoteMessage(stderr)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		if ee.ExitCode() == 255 {
@@ -147,6 +147,27 @@ func classifySSHError(err error, stderr []byte) error {
 		return fmt.Errorf("ssh not found in PATH: %w", err)
 	}
 	return err
+}
+
+// remoteMessage extracts the error worth showing from ssh's stderr. ssh
+// prints its own chatter first — a control-socket race, a known_hosts
+// addition — and the remote command's message last.
+func remoteMessage(stderr []byte) string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(string(stderr)), "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case l == "":
+		case strings.HasPrefix(l, "ControlSocket "):
+		case strings.HasPrefix(l, "Warning: Permanently added"):
+		default:
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) == 0 {
+		return strings.TrimSpace(string(stderr))
+	}
+	return lines[len(lines)-1]
 }
 
 // shellQuote wraps s in single quotes for a POSIX shell. An embedded single

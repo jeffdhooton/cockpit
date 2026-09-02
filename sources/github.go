@@ -110,8 +110,13 @@ func fetchRepoCheck(ctx context.Context, repo config.RepoConfig) RepoCheck {
 		CIStatus:  "none",
 	}
 
-	// Get remote URL to derive owner/repo
-	remoteURL, err := gitCommand(ctx, repo.Path, "remote", "get-url", "origin")
+	// GitHub checks derive owner/repo from a local checkout and run gh here.
+	// A remote repo has no local checkout to ask, so it is reported as
+	// unchecked rather than checked against the wrong path.
+	if repo.Host != "" {
+		return check
+	}
+	remoteURL, err := LocalCommandRunner{}.RunIn(ctx, repo.Path, "git", "remote", "get-url", "origin")
 	if err != nil {
 		return check
 	}

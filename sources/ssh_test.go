@@ -116,3 +116,16 @@ func TestSSHRunnerAgainstARealHost(t *testing.T) {
 		t.Errorf("list-sessions on a reachable host must not read as unreachable: %v", err)
 	}
 }
+
+func TestClassifySSHErrorDropsSSHChatter(t *testing.T) {
+	// Parallel first calls race to create the control socket, and ssh
+	// prints a warning about it before the remote command's own error. The
+	// warning is not the error.
+	stderr := []byte("ControlSocket /x/ssh-abc already exists, disabling multiplexing\n" +
+		"Warning: Permanently added 'mini' (ED25519) to the list of known hosts.\n" +
+		"sh: line 0: cd: /Users/jclaw/nope: No such file or directory\n")
+	err := classifySSHError(exitState(t, 1), stderr)
+	if got := err.Error(); strings.Contains(got, "ControlSocket") || !strings.Contains(got, "No such file") {
+		t.Errorf("want the remote error alone, got %q", got)
+	}
+}
