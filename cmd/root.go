@@ -72,6 +72,18 @@ func Execute() {
 	}
 }
 
+// capture appends a thought to today's file, or says plainly that there is
+// no such file rather than failing on an empty path.
+func capture(cfg *config.Config, text string) error {
+	if cfg.Obsidian.TodayFile == "" {
+		return fmt.Errorf("no today_file configured under [obsidian], nowhere to capture to")
+	}
+	if err := sources.AppendInbox(cfg.Obsidian.TodayFile, text); err != nil {
+		return fmt.Errorf("failed to capture: %w", err)
+	}
+	return nil
+}
+
 func getConfigPath() string {
 	if cfgPath != "" {
 		return cfgPath
@@ -180,8 +192,8 @@ func runCap(cmd *cobra.Command, args []string) error {
 
 	if len(args) > 0 {
 		text := strings.Join(args, " ")
-		if err := sources.AppendInbox(cfg.Obsidian.TodayFile, text); err != nil {
-			return fmt.Errorf("failed to capture: %w", err)
+		if err := capture(cfg, text); err != nil {
+			return err
 		}
 		fmt.Printf("Captured: %s\n", text)
 		return nil
@@ -199,7 +211,7 @@ func runCap(cmd *cobra.Command, args []string) error {
 		if text == "" {
 			break
 		}
-		if err := sources.AppendInbox(cfg.Obsidian.TodayFile, text); err != nil {
+		if err := capture(cfg, text); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			continue
 		}

@@ -12,11 +12,11 @@ refresh_interval = 5
 default_view = "grid"
 
 [obsidian]
-# Path to your Obsidian vault root
-vault_path = "~/vault"
-# Markdown file for today's tasks (relative to vault or absolute)
+# Optional. Leave the whole section out on a machine with no vault, such as
+# one that only runs the daemon. Both paths are absolute.
+# Markdown file for today's tasks
 today_file = "~/vault/today.md"
-# Markdown file for inbox captures (relative to vault or absolute)
+# Markdown file for inbox captures
 inbox_file = "~/vault/inbox.md"
 
 # Add repos to monitor. Each [[repos]] entry is one repository.

@@ -53,25 +53,6 @@ func TestLoadMalformedTOML(t *testing.T) {
 	}
 }
 
-func TestLoadMissingVaultPath(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	os.WriteFile(path, []byte(`
-[general]
-session_name = "test"
-[obsidian]
-vault_path = ""
-`), 0644)
-
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error for empty vault_path")
-	}
-	if !strings.Contains(err.Error(), "vault_path is required") {
-		t.Errorf("error = %q, want to contain 'vault_path is required'", err.Error())
-	}
-}
-
 func TestLoadTildeExpansion(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -481,5 +462,21 @@ func TestHermesConfigIsValidated(t *testing.T) {
 	cfg := writeAndLoad(t, base+"[[hermes]]\nlabel = \"hermes\"\nurl = \"http://100.96.45.73:9119\"\n")
 	if cfg.Hermes[0].RefreshInterval != 30 {
 		t.Errorf("default interval = %d, want 30", cfg.Hermes[0].RefreshInterval)
+	}
+}
+
+func TestObsidianIsOptional(t *testing.T) {
+	// A daemon-only machine has no vault. vault_path was required and then
+	// never read; today_file and inbox_file are the only paths that matter.
+	cfg := writeAndLoad(t, "[general]\nsession_name = \"x\"\n")
+	if cfg.Obsidian.TodayFile != "" || cfg.Obsidian.InboxFile != "" {
+		t.Errorf("no obsidian section should mean no files, got %+v", cfg.Obsidian)
+	}
+	if cfg.Obsidian.Enabled() {
+		t.Error("no files configured means obsidian is not enabled")
+	}
+	with := writeAndLoad(t, "[obsidian]\ntoday_file = \"~/t.md\"\n")
+	if !with.Obsidian.Enabled() {
+		t.Error("a today_file alone enables capture")
 	}
 }

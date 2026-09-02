@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jhoot/cockpit/config"
 	"github.com/spf13/cobra"
 )
 
@@ -75,5 +76,12 @@ func TestRuntimeErrorsDoNotPrintUsage(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "Usage:") {
 		t.Errorf("a runtime error must not print usage, got:\n%s", out.String())
+	}
+}
+
+func TestCapWithoutATodayFileSaysSo(t *testing.T) {
+	err := capture(&config.Config{}, "a thought")
+	if err == nil || !strings.Contains(err.Error(), "today_file") {
+		t.Errorf("want a clear error naming today_file, got %v", err)
 	}
 }

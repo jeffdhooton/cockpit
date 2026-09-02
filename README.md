@@ -73,10 +73,9 @@ The config looks like this:
 session_name = "cockpit"
 refresh_interval = 5
 
-[obsidian]
-vault_path = "~/Documents/Vault"
-today_file = "Cockpit/today.md"
-inbox_file = "Cockpit/inbox.md"
+[obsidian]                          # optional: omit on a machine with no vault
+today_file = "~/Documents/Vault/Cockpit/today.md"
+inbox_file = "~/Documents/Vault/Cockpit/inbox.md"
 
 [[repos]]
 path = "~/workspace/my-app"
@@ -101,7 +100,10 @@ enabled = true
 port = 45679
 ```
 
-Create the Obsidian task files if they don't exist:
+The `[obsidian]` section is optional. Without it the Today and Inbox panels
+stay empty and `cockpit cap` says there is nowhere to capture to, which is
+the right shape for a machine that only runs the daemon. Create the task
+files if they don't exist:
 
 ```bash
 mkdir -p ~/Documents/Vault/Cockpit

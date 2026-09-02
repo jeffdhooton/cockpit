@@ -40,9 +40,18 @@ type GeneralConfig struct {
 }
 
 type ObsidianConfig struct {
+	// VaultPath is accepted for older configs but nothing reads it. The two
+	// files below are what cockpit opens, as absolute paths.
 	VaultPath string `toml:"vault_path"`
 	TodayFile string `toml:"today_file"`
 	InboxFile string `toml:"inbox_file"`
+}
+
+// Enabled reports whether there is anywhere to read tasks from or capture
+// to. A daemon-only machine has no vault, and that is fine: the panels show
+// nothing and capture says why.
+func (o ObsidianConfig) Enabled() bool {
+	return o.TodayFile != "" || o.InboxFile != ""
 }
 
 type RepoConfig struct {
@@ -288,9 +297,6 @@ func expandPaths(cfg *Config) {
 }
 
 func validate(cfg *Config) error {
-	if cfg.Obsidian.VaultPath == "" {
-		return fmt.Errorf("config: vault_path is required")
-	}
 	if cfg.General.RefreshInterval <= 0 {
 		return fmt.Errorf("config: refresh_interval must be > 0")
 	}
