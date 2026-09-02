@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/jhoot/cockpit/config"
 )
 
 const bin = "/usr/local/bin/cockpit"
@@ -241,4 +242,22 @@ func TestInstallCodexReportsTrust(t *testing.T) {
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func TestRemoteInstallScriptRunsTheRemoteBinary(t *testing.T) {
+	h := config.HostConfig{Name: "mini", Tmux: "/opt/homebrew/bin/tmux", Cockpit: "~/.local/bin/cockpit"}
+	got, err := remoteInstallScript(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "~/'.local/bin/cockpit' 'hook' 'install'" {
+		t.Errorf("script = %s", got)
+	}
+}
+
+func TestRemoteInstallNeedsTheRemoteBinaryPath(t *testing.T) {
+	h := config.HostConfig{Name: "mini", Tmux: "/opt/homebrew/bin/tmux"}
+	if _, err := remoteInstallScript(h); err == nil || !strings.Contains(err.Error(), "cockpit") {
+		t.Errorf("a host with no cockpit path must say so plainly, got %v", err)
+	}
 }

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/jhoot/cockpit/config"
+	"github.com/jhoot/cockpit/sources"
 	"github.com/spf13/cobra"
 )
 
@@ -36,10 +38,19 @@ type installReport struct {
 	Trusted bool // Codex only: a trust entry exists for at least one hook
 }
 
+var hookInstallHost string
+
 var hookInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install the status hook into Claude Code and Codex",
+	Long: `Install the status hook into Claude Code and Codex on this machine, or,
+with --host, on a configured remote host that has cockpit installed. The
+remote install runs that machine's own cockpit, so its hooks post to its own
+daemon and its status lands in its own tmux, which cockpit here already reads.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if hookInstallHost != "" {
+			return runRemoteInstall(cmd, hookInstallHost)
+		}
 		bin, err := os.Executable()
 		if err != nil {
 			return err
@@ -73,6 +84,40 @@ inferred.
 		}
 		return nil
 	},
+}
+
+// runRemoteInstall runs `cockpit hook install` on a remote host over ssh and
+// relays its output verbatim, trust caveat included.
+func runRemoteInstall(cmd *cobra.Command, name string) error {
+	cfg, err := config.Load(getConfigPath())
+	if err != nil {
+		return err
+	}
+	host, ok := cfg.Host(name)
+	if !ok {
+		return fmt.Errorf("host %q is not declared under [[hosts]]", name)
+	}
+	script, err := remoteInstallScript(host)
+	if err != nil {
+		return err
+	}
+	r := sources.SSHRunner{Host: host.Name, Tmux: host.Tmux, Timeout: 30 * time.Second}
+	out, err := r.RunShell(cmd.Context(), script)
+	fmt.Fprint(cmd.OutOrStdout(), out)
+	if err != nil {
+		return fmt.Errorf("%s: %w", host.Name, err)
+	}
+	return nil
+}
+
+// remoteInstallScript is the shell command that runs the remote binary's own
+// installer. A host with no cockpit path cannot report status, and the
+// message says exactly what to add.
+func remoteInstallScript(host config.HostConfig) (string, error) {
+	if host.Cockpit == "" {
+		return "", fmt.Errorf("host %q has no cockpit path: install cockpit there and set cockpit = \"~/.local/bin/cockpit\" under [[hosts]]", host.Name)
+	}
+	return sources.QuoteRemotePath(host.Cockpit) + " 'hook' 'install'", nil
 }
 
 func added(n int) string {

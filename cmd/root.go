@@ -61,6 +61,7 @@ func init() {
 
 	hookStatusCmd.Flags().StringVar(&hookEngine, "engine", "claude", "reporting engine: claude or codex")
 	hookCmd.AddCommand(hookStatusCmd)
+	hookInstallCmd.Flags().StringVar(&hookInstallHost, "host", "", "install on a configured remote host instead of this machine")
 	hookCmd.AddCommand(hookInstallCmd)
 	rootCmd.AddCommand(hookCmd)
 }

@@ -92,7 +92,7 @@ func (r SSHRunner) RunIn(ctx context.Context, dir, name string, args ...string) 
 	for _, a := range args {
 		parts = append(parts, shellQuote(a))
 	}
-	return r.RunShell(ctx, "cd -- "+quoteRemotePath(dir)+" && "+strings.Join(parts, " "))
+	return r.RunShell(ctx, "cd -- "+QuoteRemotePath(dir)+" && "+strings.Join(parts, " "))
 }
 
 // remoteCommand renders tmux plus its arguments as one quoted shell string.
@@ -178,7 +178,7 @@ func shellQuote(s string) string {
 }
 
 // quoteRemotePath quotes a path while letting a leading ~ expand remotely.
-func quoteRemotePath(p string) string {
+func QuoteRemotePath(p string) string {
 	if p == "~" {
 		return "~"
 	}

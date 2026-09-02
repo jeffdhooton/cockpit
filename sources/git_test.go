@@ -158,10 +158,10 @@ func TestSSHRunnerRunInChangesDirectoryFirst(t *testing.T) {
 	if got[len(got)-1] != script {
 		t.Fatalf("argv tail = %q", got[len(got)-1])
 	}
-	if q := quoteRemotePath("~/workspace/docket"); q != "~/'workspace/docket'" {
+	if q := QuoteRemotePath("~/workspace/docket"); q != "~/'workspace/docket'" {
 		t.Errorf("a leading ~ must stay unquoted so the remote shell expands it, got %s", q)
 	}
-	if q := quoteRemotePath("/abs/path with space"); q != "'/abs/path with space'" {
+	if q := QuoteRemotePath("/abs/path with space"); q != "'/abs/path with space'" {
 		t.Errorf("an absolute path is quoted whole, got %s", q)
 	}
 }
