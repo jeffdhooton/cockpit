@@ -258,7 +258,10 @@ func installCodexHooks(path, bin string) (installReport, error) {
 		var block bytes.Buffer
 		block.WriteString("\n# cockpit status hooks, added by `cockpit hook install`\n")
 		for _, event := range codexEvents {
-			fmt.Fprintf(&block, "[[hooks.%s]]\n[[hooks.%s.hooks]]\ntype = \"command\"\ncommand = %q\ntimeout = 2\nasync = true\n\n",
+			// Synchronous on purpose. Codex 0.144 skips an async hook with a
+			// warning nobody sees, and the hook bounds itself at 500ms, so
+			// sync costs the agent nothing worth having async for.
+			fmt.Fprintf(&block, "[[hooks.%s]]\n[[hooks.%s.hooks]]\ntype = \"command\"\ncommand = %q\ntimeout = 2\n\n",
 				event, event, command)
 		}
 		report.Added = len(codexEvents)

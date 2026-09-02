@@ -157,8 +157,12 @@ func TestInstallCodexAppendsParseableHooks(t *testing.T) {
 			continue
 		}
 		h := groups[0].Hooks[0]
-		if h.Type != "command" || !strings.Contains(h.Command, "--engine codex") || !h.Async {
+		if h.Type != "command" || !strings.Contains(h.Command, "--engine codex") {
 			t.Errorf("%s hook = %+v", event, h)
+		}
+		// Codex 0.144 skips async hooks with a warning nobody sees.
+		if h.Async {
+			t.Errorf("%s hook must be synchronous to run on older Codex: %+v", event, h)
 		}
 	}
 }
