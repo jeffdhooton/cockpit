@@ -71,3 +71,14 @@ func TestNeedingCaptureSkipsReportingSessions(t *testing.T) {
 		t.Errorf("want only the unreported sessions, got %+v", got)
 	}
 }
+
+func TestNeedingCaptureNeverIncludesARemoteSession(t *testing.T) {
+	m := NewSessionsModel()
+	m.Sessions = []sources.TmuxSession{{Name: "docket", Host: "mini"}, {Name: "local"}}
+	m.AdoptReported()
+
+	got := m.NeedingCapture()
+	if len(got) != 1 || got[0].Name != "local" {
+		t.Errorf("a remote session cannot be captured locally, got %+v", got)
+	}
+}

@@ -9,8 +9,8 @@ import (
 func TestParseTmuxOutput(t *testing.T) {
 	// Seven fields: the three trailing @cockpit_* status options are empty
 	// here, which is exactly what tmux emits for a session that never reported.
-	input := "dev|3|1|1700000000|||\nserver|1|0|1699990000|||\n"
-	sessions, err := parseTmuxOutput(input)
+	input := "dev|3|1|1700000000||||\nserver|1|0|1699990000||||\n"
+	sessions, err := parseTmuxOutput(input, "", time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestParseTmuxOutput(t *testing.T) {
 }
 
 func TestParseTmuxOutputEmpty(t *testing.T) {
-	sessions, err := parseTmuxOutput("")
+	sessions, err := parseTmuxOutput("", "", time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestParseTmuxOutputEmpty(t *testing.T) {
 func TestParseTmuxOutputMalformed(t *testing.T) {
 	// Lines with fewer than 4 fields should be skipped
 	input := "incomplete|1\n"
-	sessions, err := parseTmuxOutput(input)
+	sessions, err := parseTmuxOutput(input, "", time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -76,8 +76,8 @@ func TestAgentStatusNeedsInputIsDistinct(t *testing.T) {
 
 func TestParseSessionsReadsReportedStatus(t *testing.T) {
 	now := time.Now().Unix()
-	out := "app|3|1|" + strconv.FormatInt(now, 10) + "|working|" + strconv.FormatInt(now, 10) + "|dev\n"
-	sessions, err := parseTmuxOutput(out)
+	out := "app|3|1|" + strconv.FormatInt(now, 10) + "|working|" + strconv.FormatInt(now, 10) + "|dev|\n"
+	sessions, err := parseTmuxOutput(out, "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +94,8 @@ func TestParseSessionsReadsReportedStatus(t *testing.T) {
 
 func TestParseSessionsHandlesUnsetStatusOptions(t *testing.T) {
 	// A session that never reported yields empty option fields, not an error.
-	out := "docket|1|0|1788250990|||\n"
-	sessions, err := parseTmuxOutput(out)
+	out := "docket|1|0|1788250990||||\n"
+	sessions, err := parseTmuxOutput(out, "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,8 +110,8 @@ func TestParseSessionsHandlesUnsetStatusOptions(t *testing.T) {
 func TestParseSessionsKeepsSeparatorInName(t *testing.T) {
 	// The name is anchored on the trailing fixed fields precisely so a name
 	// containing the separator survives.
-	out := "a|b|2|0|1788250990|idle|1788250990|zsh\n"
-	sessions, _ := parseTmuxOutput(out)
+	out := "a|b|2|0|1788250990|idle|1788250990|zsh|\n"
+	sessions, _ := parseTmuxOutput(out, "", time.Now())
 	if len(sessions) != 1 || sessions[0].Name != "a|b" {
 		t.Fatalf("name = %q, want \"a|b\"", sessions[0].Name)
 	}
@@ -120,12 +120,35 @@ func TestParseSessionsKeepsSeparatorInName(t *testing.T) {
 func TestParseSessionsHandlesNeverAttachedSession(t *testing.T) {
 	// Verified against real tmux: session_last_attached is empty, not zero,
 	// for a session nobody has attached to yet. The field count still holds.
-	out := "fresh|1|0||needs_input|" + strconv.FormatInt(time.Now().Unix(), 10) + "|dev\n"
-	sessions, _ := parseTmuxOutput(out)
+	out := "fresh|1|0||needs_input|" + strconv.FormatInt(time.Now().Unix(), 10) + "|dev|\n"
+	sessions, _ := parseTmuxOutput(out, "", time.Now())
 	if len(sessions) != 1 || sessions[0].Name != "fresh" {
 		t.Fatalf("got %+v", sessions)
 	}
 	if !sessions[0].StatusReported {
 		t.Error("an empty last_attached must not stop the status from parsing")
+	}
+}
+
+func TestParseSessionsCarriesHostAndView(t *testing.T) {
+	now := time.Unix(1788250998, 0)
+	out := "mini|1|0|1788250990||||mini\n" + "docket|2|1|1788250990|working|1788250990|zsh|\n"
+	sessions, err := parseTmuxOutput(out, "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %+v", sessions)
+	}
+	if sessions[0].ViewOf != "mini" {
+		t.Errorf("view marker not read: %+v", sessions[0])
+	}
+	if sessions[1].ViewOf != "" || !sessions[1].StatusReported {
+		t.Errorf("got %+v", sessions[1])
+	}
+
+	remote, _ := parseTmuxOutput("docket|1|0|1788250990||||\n", "mini", now)
+	if remote[0].Host != "mini" || remote[0].Key() != "mini/docket" {
+		t.Errorf("remote parse must stamp the host, got %+v", remote[0])
 	}
 }

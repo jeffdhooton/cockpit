@@ -642,3 +642,59 @@ func TestBuildTargetsCarriesWhetherStatusWasReported(t *testing.T) {
 		t.Error("docs' status is a guess and must not claim otherwise")
 	}
 }
+
+func TestBuildTargetsKeepsSameLabelOnTwoHostsApart(t *testing.T) {
+	local := sess("docket")
+	remote := sess("docket")
+	remote.Host = "mini"
+
+	targets := BuildTargets([]sources.TmuxSession{local, remote}, nil, nil, "cockpit")
+
+	if len(targets) != 2 || targets[0].Key() == targets[1].Key() {
+		t.Fatalf("want two distinct tiles, got %v", labels(targets))
+	}
+}
+
+func TestBuildTargetsJoinsRemoteRepoOnHost(t *testing.T) {
+	// A remote session and a remote repo with the same label are one tile; a
+	// local repo with that label is a different one.
+	remote := sess("docket")
+	remote.Host = "mini"
+	remoteRepo := repo("docket")
+	remoteRepo.Host = "mini"
+	localRepo := repo("docket")
+
+	targets := BuildTargets([]sources.TmuxSession{remote}, []sources.GitRepoStatus{remoteRepo, localRepo}, nil, "cockpit")
+
+	if len(targets) != 2 {
+		t.Fatalf("want a joined remote tile and a dormant local one, got %v", labels(targets))
+	}
+	if targets[0].Repo == nil || targets[0].Repo.Host != "mini" {
+		t.Errorf("remote session must join the remote repo, got %+v", targets[0].Repo)
+	}
+}
+
+func TestBuildTargetsExcludesTheCockpitSessionPerHost(t *testing.T) {
+	remoteCockpit := sess("cockpit")
+	remoteCockpit.Host = "mini"
+	if got := BuildTargets([]sources.TmuxSession{sess("cockpit"), remoteCockpit}, nil, nil, "cockpit"); len(got) != 0 {
+		t.Errorf("cockpit's own session is excluded on every host, got %v", labels(got))
+	}
+}
+
+func TestBuildTargetsExcludesViewSessions(t *testing.T) {
+	view := sess("mini")
+	view.ViewOf = "mini"
+	if got := BuildTargets([]sources.TmuxSession{view}, nil, nil, "cockpit"); len(got) != 0 {
+		t.Errorf("a local view of a remote host is not a project, got %v", labels(got))
+	}
+}
+
+func TestRenderTileShowsHostPrefix(t *testing.T) {
+	s := sess("docket")
+	s.Host = "mini"
+	out := renderTile(Target{Label: "docket", Host: "mini", Session: &s}, 22, false)
+	if !strings.Contains(out, "mini/") {
+		t.Errorf("remote tile must name its host:\n%s", out)
+	}
+}

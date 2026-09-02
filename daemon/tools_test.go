@@ -164,7 +164,7 @@ func TestListProcessesReportsState(t *testing.T) {
 
 func TestListProjectsSummarises(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-sessions": "app|2|1|1700000000|||\n",
+		"list-sessions": "app|2|1|1700000000||||\n",
 		"list-windows":  "0|shell|0|111|1\n1|dev|0|222|0\n",
 	}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "npm run dev"}))
@@ -280,7 +280,7 @@ func TestReadOutputRejectsAWindowThatDoesNotExist(t *testing.T) {
 }
 
 func TestWhoamiIdentifiesTheDaemon(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-sessions": "app|1|0|1700000000|||\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-sessions": "app|1|0|1700000000||||\n"}}
 	tools := testTools(t, f, devApp())
 
 	got, err := tools.Call(context.Background(), "cockpit_whoami", nil)

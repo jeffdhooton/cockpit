@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jhoot/cockpit/config"
 )
@@ -218,7 +219,7 @@ func TestParseWindowsHandlesSeparatorInWindowName(t *testing.T) {
 }
 
 func TestParseTmuxOutputHandlesSeparatorInSessionName(t *testing.T) {
-	got, err := parseTmuxOutput("od|d|name|2|1|1700000000|||\n")
+	got, err := parseTmuxOutput("od|d|name|2|1|1700000000||||\n", "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

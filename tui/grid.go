@@ -14,7 +14,10 @@ import (
 // session, or both joined on session.Name == repo.Label — the same identity
 // tmuxJump already assumes when it switches to a session named for a repo.
 type Target struct {
-	Label   string
+	Label string
+	// Host is the machine the target lives on; empty means local. Two hosts
+	// may each have a "docket", and they must never share a tile.
+	Host    string
 	Session *sources.TmuxSession
 	Repo    *sources.GitRepoStatus
 	Status  sources.AgentStatus
@@ -26,6 +29,17 @@ type Target struct {
 
 // Running reports whether the target has a live tmux session behind it.
 func (t Target) Running() bool { return t.Session != nil }
+
+// Key identifies the target across hosts: host/label remotely, label locally.
+func (t Target) Key() string {
+	if t.Host == "" {
+		return t.Label
+	}
+	return t.Host + "/" + t.Label
+}
+
+// Name is what the tile shows: the key, so a remote tile names its host.
+func (t Target) Name() string { return t.Key() }
 
 // AttachProcesses joins per-repo process state onto the tiles. It is separate
 // from BuildTargets because process data arrives on its own poll and should
@@ -80,9 +94,9 @@ func BuildTargets(
 	statuses map[string]sources.AgentStatus,
 	selfSession string,
 ) []Target {
-	repoByLabel := make(map[string]*sources.GitRepoStatus, len(repos))
+	repoByKey := make(map[string]*sources.GitRepoStatus, len(repos))
 	for i := range repos {
-		repoByLabel[repos[i].Label] = &repos[i]
+		repoByKey[repos[i].Key()] = &repos[i]
 	}
 
 	var running, dormant []Target
@@ -90,29 +104,32 @@ func BuildTargets(
 
 	for i := range sessions {
 		s := &sessions[i]
-		if s.Name == selfSession {
+		// Cockpit's own session is excluded on every host, and so is a local
+		// view session that exists only to hold ssh windows onto a remote.
+		if s.Name == selfSession || s.ViewOf != "" {
 			continue
 		}
-		live[s.Name] = true
+		live[s.Key()] = true
 		running = append(running, Target{
 			Label:          s.Name,
+			Host:           s.Host,
 			Session:        s,
-			Repo:           repoByLabel[s.Name],
-			Status:         statuses[s.Name],
+			Repo:           repoByKey[s.Key()],
+			Status:         statuses[s.Key()],
 			StatusReported: s.StatusReported,
 		})
 	}
 
 	for i := range repos {
 		r := &repos[i]
-		if live[r.Label] {
+		if live[r.Key()] {
 			continue
 		}
-		dormant = append(dormant, Target{Label: r.Label, Repo: r})
+		dormant = append(dormant, Target{Label: r.Label, Host: r.Host, Repo: r})
 	}
 
-	sort.Slice(running, func(i, j int) bool { return running[i].Label < running[j].Label })
-	sort.Slice(dormant, func(i, j int) bool { return dormant[i].Label < dormant[j].Label })
+	sort.Slice(running, func(i, j int) bool { return running[i].Key() < running[j].Key() })
+	sort.Slice(dormant, func(i, j int) bool { return dormant[i].Key() < dormant[j].Key() })
 
 	return append(running, dormant...)
 }
@@ -203,7 +220,7 @@ func renderTile(t Target, width int, selected bool) string {
 	case !t.Running():
 		nameStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 	}
-	name := nameStyle.Render(Truncate(t.Label, inner))
+	name := nameStyle.Render(Truncate(t.Name(), inner))
 
 	// Shape carries session existence: a hollow ring means there is nothing to
 	// attach to, while every live session keeps the filled status dot.

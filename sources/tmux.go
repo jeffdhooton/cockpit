@@ -85,11 +85,13 @@ func GetTmuxSessions(ctx context.Context) ([]TmuxSession, error) {
 		// tmux server not running — not an error, just no sessions
 		return nil, nil
 	}
-	return parseTmuxOutput(string(out))
+	return parseTmuxOutput(string(out), "", time.Now())
 }
 
-// parseTmuxOutput parses the tab-delimited output of tmux list-sessions.
-func parseTmuxOutput(output string) ([]TmuxSession, error) {
+// parseTmuxOutput parses list-sessions output for one host. The clock is a
+// parameter because a remote host's status timestamps are on its clock, and
+// staleness must be judged against that one.
+func parseTmuxOutput(output, host string, now time.Time) ([]TmuxSession, error) {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return nil, nil
@@ -102,15 +104,15 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 			continue
 		}
 		parts := strings.Split(line, fieldSep)
-		if len(parts) < 7 {
+		if len(parts) < 8 {
 			continue
 		}
 
 		// Layout is name | windows | attached | last_attached | status |
-		// status_at | status_window, and the name may contain the separator,
-		// so anchor on the six fixed fields at the end and treat everything
-		// before them as the name.
-		nameEnd := len(parts) - 6
+		// status_at | status_window | view_of, and the name may contain the
+		// separator, so anchor on the seven fixed fields at the end and treat
+		// everything before them as the name.
+		nameEnd := len(parts) - 7
 		if nameEnd < 1 {
 			continue
 		}
@@ -124,7 +126,7 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 		// and the inheritance check only matters when reading one window.
 		reportedWindow := parts[nameEnd+5]
 		status, reported := StatusFromOptions(
-			parts[nameEnd+3], parts[nameEnd+4], reportedWindow, reportedWindow, time.Now())
+			parts[nameEnd+3], parts[nameEnd+4], reportedWindow, reportedWindow, now)
 
 		sessions = append(sessions, TmuxSession{
 			Name:           strings.Join(parts[:nameEnd], fieldSep),
@@ -133,6 +135,8 @@ func parseTmuxOutput(output string) ([]TmuxSession, error) {
 			LastUsed:       lastUsed,
 			Status:         status,
 			StatusReported: reported,
+			Host:           host,
+			ViewOf:         parts[nameEnd+6],
 		})
 	}
 	return sessions, nil

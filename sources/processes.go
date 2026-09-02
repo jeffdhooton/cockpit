@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jhoot/cockpit/config"
 )
@@ -31,6 +32,12 @@ type ProcessInfo struct {
 // ListSessions returns every tmux session. No server running means no
 // sessions, which is an answer rather than a failure.
 func ListSessions(ctx context.Context, r Runner) ([]TmuxSession, error) {
+	return ListSessionsOn(ctx, r, "", time.Now())
+}
+
+// ListSessionsOn lists the sessions on one host, judging status staleness by
+// that host's clock.
+func ListSessionsOn(ctx context.Context, r Runner, host string, now time.Time) ([]TmuxSession, error) {
 	out, err := r.Run(ctx, ListSessionsArgs()...)
 	if err != nil {
 		// A missing binary means we cannot know. Anything else here is the
@@ -40,7 +47,7 @@ func ListSessions(ctx context.Context, r Runner) ([]TmuxSession, error) {
 		}
 		return nil, nil
 	}
-	return parseTmuxOutput(out)
+	return parseTmuxOutput(out, host, now)
 }
 
 // SessionExists reports whether a tmux session is present.

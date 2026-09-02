@@ -36,8 +36,8 @@ func (m *SessionsModel) AdoptReported() {
 		if !s.StatusReported {
 			continue
 		}
-		m.Statuses[s.Name] = s.Status
-		m.Reported[s.Name] = true
+		m.Statuses[s.Key()] = s.Status
+		m.Reported[s.Key()] = true
 	}
 }
 
@@ -47,9 +47,12 @@ func (m *SessionsModel) AdoptReported() {
 func (m SessionsModel) NeedingCapture() []sources.TmuxSession {
 	var out []sources.TmuxSession
 	for _, s := range m.Sessions {
-		if !m.Reported[s.Name] {
-			out = append(out, s)
+		// The capture is a local exec, so a remote session can only ever be
+		// reported, never guessed.
+		if s.Host != "" || m.Reported[s.Key()] {
+			continue
 		}
+		out = append(out, s)
 	}
 	return out
 }

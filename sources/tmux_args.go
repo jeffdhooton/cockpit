@@ -28,7 +28,7 @@ const windowFormat = "#{window_index}|#{window_name}|#{pane_dead}|#{pane_pid}|#{
 // than having anything added to it. tmux reports an option that was never set
 // as empty rather than failing, so a session that has never reported still
 // produces a well-formed line.
-const sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_last_attached}|#{@cockpit_status}|#{@cockpit_status_at}|#{@cockpit_status_window}"
+const sessionFormat = "#{session_name}|#{session_windows}|#{session_attached}|#{session_last_attached}|#{@cockpit_status}|#{@cockpit_status_at}|#{@cockpit_status_window}|#{@cockpit_view_of}"
 
 // Window is one tmux window in a session.
 type Window struct {
