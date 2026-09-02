@@ -52,8 +52,22 @@ func ListSessionsOn(ctx context.Context, r Runner, host string, now time.Time) (
 
 // SessionExists reports whether a tmux session is present.
 func SessionExists(ctx context.Context, r Runner, session string) bool {
+	exists, _ := sessionExists(ctx, r, session)
+	return exists
+}
+
+// sessionExists is SessionExists with the failure kept. A has-session that
+// failed because the host is unreachable is not a verified negative, and the
+// callers that act on absence need to tell the two apart.
+func sessionExists(ctx context.Context, r Runner, session string) (bool, error) {
 	_, err := r.Run(ctx, HasSessionArgs(session)...)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrHostUnreachable) || errors.Is(err, ErrTmuxNotFound) {
+		return false, err
+	}
+	return false, nil
 }
 
 // ListWindows returns the windows in a session.
@@ -68,7 +82,11 @@ func ListWindows(ctx context.Context, r Runner, session string) ([]Window, error
 // EnsureSession creates the repo's session if it is missing, reporting whether
 // it had to. The session's first window is a plain shell at the repo root.
 func EnsureSession(ctx context.Context, r Runner, repo config.RepoConfig) (bool, error) {
-	if SessionExists(ctx, r, repo.Label) {
+	exists, err := sessionExists(ctx, r, repo.Label)
+	if err != nil {
+		return false, fmt.Errorf("ensure %s: %w", repo.Label, err)
+	}
+	if exists {
 		return false, nil
 	}
 	if _, err := r.Run(ctx, NewSessionArgs(repo.Label, repo.Path)...); err != nil {
@@ -190,10 +208,14 @@ func ReconcileProcesses(ctx context.Context, r Runner, repo config.RepoConfig) [
 		// an empty one starts every process a second time — two dev servers
 		// fighting over one port. Only a session verified absent makes an empty
 		// list trustworthy; anything else fails closed.
-		if errors.Is(err, ErrTmuxNotFound) {
+		if errors.Is(err, ErrTmuxNotFound) || errors.Is(err, ErrHostUnreachable) {
 			return []error{fmt.Errorf("reconcile %s: %w", repo.Label, err)}
 		}
-		if SessionExists(ctx, r, repo.Label) {
+		exists, probe := sessionExists(ctx, r, repo.Label)
+		if probe != nil {
+			return []error{fmt.Errorf("reconcile %s: %w", repo.Label, probe)}
+		}
+		if exists {
 			return []error{fmt.Errorf("reconcile %s: cannot read windows: %w", repo.Label, err)}
 		}
 		windows = nil

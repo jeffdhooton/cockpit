@@ -386,3 +386,36 @@ func TestExecRunnerReportsMissingTmux(t *testing.T) {
 		t.Errorf("want ErrTmuxNotFound, got %v", err)
 	}
 }
+
+func TestReconcileNeverLaunchesAgainstAnUnreachableHost(t *testing.T) {
+	// A link drop makes has-session fail too, which locally would read as
+	// "verified absent". Over ssh it is unknown, and unknown must not launch.
+	f := &fakeRunner{errs: map[string]error{
+		"list-windows": fmt.Errorf("ssh: %w", ErrHostUnreachable),
+		"has-session":  fmt.Errorf("ssh: %w", ErrHostUnreachable),
+	}}
+	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
+
+	errs := ReconcileProcesses(context.Background(), f, repo)
+
+	if got := f.called("new-window"); len(got) != 0 {
+		t.Errorf("launched against an unreachable host: %v", got)
+	}
+	if len(errs) != 1 || !errors.Is(errs[0], ErrHostUnreachable) {
+		t.Fatalf("want the transport error surfaced, got %v", errs)
+	}
+}
+
+func TestEnsureSessionDoesNotCreateOnAnUnreachableHost(t *testing.T) {
+	// has-session failing because the link is down is not "no such session".
+	f := &fakeRunner{errs: map[string]error{"has-session": fmt.Errorf("ssh: %w", ErrHostUnreachable)}}
+
+	_, err := EnsureSession(context.Background(), f, devRepo())
+
+	if !errors.Is(err, ErrHostUnreachable) {
+		t.Fatalf("want the transport error, got %v", err)
+	}
+	if len(f.called("new-session")) != 0 {
+		t.Error("a session must not be created on a host that cannot be reached")
+	}
+}
