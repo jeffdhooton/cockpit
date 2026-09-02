@@ -466,3 +466,20 @@ func TestRepoOnDistinguishesHosts(t *testing.T) {
 		t.Error("an undeclared host has no repos")
 	}
 }
+
+func TestHermesConfigIsValidated(t *testing.T) {
+	base := "[obsidian]\nvault_path = \"/v\"\n"
+	for name, body := range map[string]string{
+		"bad url":    "[[hermes]]\nlabel = \"hermes\"\nurl = \"::nope\"\n",
+		"ftp scheme": "[[hermes]]\nlabel = \"hermes\"\nurl = \"ftp://x:1\"\n",
+		"bad label":  "[[hermes]]\nlabel = \"her mes\"\nurl = \"http://x:1\"\n",
+	} {
+		if err := loadErr(t, base+body); err == nil {
+			t.Errorf("%s: want a validation error", name)
+		}
+	}
+	cfg := writeAndLoad(t, base+"[[hermes]]\nlabel = \"hermes\"\nurl = \"http://100.96.45.73:9119\"\n")
+	if cfg.Hermes[0].RefreshInterval != 30 {
+		t.Errorf("default interval = %d, want 30", cfg.Hermes[0].RefreshInterval)
+	}
+}

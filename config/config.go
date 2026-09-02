@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,7 @@ type Config struct {
 	Signals  SignalsConfig  `toml:"signals"`
 	Daemon   DaemonConfig   `toml:"daemon"`
 	Hosts    []HostConfig   `toml:"hosts"`
+	Hermes   []HermesConfig `toml:"hermes"`
 }
 
 type GeneralConfig struct {
@@ -72,6 +74,14 @@ type HostConfig struct {
 	// Cockpit is the absolute path of cockpit on that machine, when installed.
 	// It enables `cockpit hook install --host`.
 	Cockpit string `toml:"cockpit"`
+}
+
+// HermesConfig is a Hermes dashboard whose status endpoint answers without a
+// token. Cockpit reads gateway health from it and nothing else.
+type HermesConfig struct {
+	Label           string `toml:"label"`
+	URL             string `toml:"url"`
+	RefreshInterval int    `toml:"refresh_interval"`
 }
 
 // Host looks up a declared host by name.
@@ -297,6 +307,26 @@ func validate(cfg *Config) error {
 	}
 	if err := validateHosts(cfg); err != nil {
 		return err
+	}
+	if err := validateHermes(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateHermes(cfg *Config) error {
+	for i := range cfg.Hermes {
+		h := &cfg.Hermes[i]
+		if !validHostName.MatchString(h.Label) {
+			return fmt.Errorf("config: hermes %q: label must be alphanumeric, hyphens, or underscores", h.Label)
+		}
+		u, err := url.Parse(h.URL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("config: hermes %q: url must be http or https, got %q", h.Label, h.URL)
+		}
+		if h.RefreshInterval <= 0 {
+			h.RefreshInterval = 30
+		}
 	}
 	return nil
 }
