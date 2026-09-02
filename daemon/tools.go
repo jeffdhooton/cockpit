@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -259,6 +260,9 @@ func (t *Tools) signals(ctx context.Context) (any, error) {
 	}
 	if t.Cfg.GitHub.Enabled {
 		in.GitHub = sources.GetGitHubStatus(ctx, t.Cfg.Repos)
+	}
+	for _, h := range t.Cfg.Hermes {
+		in.Hermes = append(in.Hermes, sources.GetHermesStatus(ctx, http.DefaultClient, h))
 	}
 
 	signals := sources.ComputeSignals(in)
