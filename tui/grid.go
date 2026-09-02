@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jhoot/cockpit/config"
 	"github.com/jhoot/cockpit/sources"
 )
 
@@ -520,6 +522,10 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	t := targets[idx]
 
+	if t.Host != "" {
+		return m.enterRemote(t)
+	}
+
 	// A configured repo goes through the full jump even when its session is
 	// already up, so processes that died or were never started come back.
 	if _, configured := m.config.Repo(t.Label); configured {
@@ -535,6 +541,30 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	repo := m.repoForLabel(t.Label, t.Repo.Path)
 	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
+}
+
+// enterRemote jumps to a project on another host through a local view
+// session. An unconfigured remote session — one someone started by hand on
+// that machine — still gets a view window; it just has no processes to bring
+// up.
+func (m *Model) enterRemote(t Target) tea.Cmd {
+	host, ok := m.config.Host(t.Host)
+	if !ok {
+		return nil
+	}
+	repo, configured := m.config.RepoOn(t.Host, t.Label)
+	if !configured {
+		if !t.Running() {
+			return nil
+		}
+		repo = config.RepoConfig{Host: t.Host, Label: t.Label}
+	}
+	return func() tea.Msg {
+		local := sources.DefaultRunner()
+		remote := sources.SSHRunner{Host: host.Name, Tmux: host.Tmux}
+		err := sources.JumpRemote(context.Background(), local, remote, host, repo)
+		return tmuxSwitchResultMsg{Err: err}
+	}
 }
 
 // handleGridKey is the grid view's key surface. It is deliberately narrower than

@@ -164,13 +164,21 @@ func (d DaemonConfig) IsEnabled() bool {
 }
 
 // Repo returns the configured repo with the given label.
-func (c *Config) Repo(label string) (RepoConfig, bool) {
+// RepoOn looks up a repo by host and label. Two hosts may each have a
+// "docket"; matching on label alone would hand a local session the remote
+// repo's config.
+func (c *Config) RepoOn(host, label string) (RepoConfig, bool) {
 	for _, r := range c.Repos {
-		if r.Label == label {
+		if r.Host == host && r.Label == label {
 			return r, true
 		}
 	}
 	return RepoConfig{}, false
+}
+
+// Repo looks up a local repo by label.
+func (c *Config) Repo(label string) (RepoConfig, bool) {
+	return c.RepoOn("", label)
 }
 
 type GitHubConfig struct {

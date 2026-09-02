@@ -450,3 +450,19 @@ func TestRepoKeyQualifiesRemote(t *testing.T) {
 		t.Errorf("remote key = %q", got)
 	}
 }
+
+func TestRepoOnDistinguishesHosts(t *testing.T) {
+	cfg := &Config{Repos: []RepoConfig{
+		{Host: "mini", Label: "docket", Path: "~/workspace/docket"},
+		{Label: "docket", Path: "/Users/jeff/workspace/docket"},
+	}}
+	if r, ok := cfg.RepoOn("", "docket"); !ok || r.Host != "" {
+		t.Errorf("local lookup must not return the remote repo, got %+v", r)
+	}
+	if r, ok := cfg.RepoOn("mini", "docket"); !ok || r.Host != "mini" {
+		t.Errorf("remote lookup must return the remote repo, got %+v", r)
+	}
+	if _, ok := cfg.RepoOn("halo", "docket"); ok {
+		t.Error("an undeclared host has no repos")
+	}
+}
