@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -83,13 +84,26 @@ daemon and its status lands in its own tmux, which cockpit here already reads.`,
 			return fmt.Errorf("codex: %w", err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "codex   %s\n", describe(codex))
-		if !codex.Skipped && !codex.Trusted {
+		if codex.Skipped {
+			return nil
+		}
+
+		// Writing the file is not installing the hook. Codex leaves a new
+		// hook untrusted until approved, so finish the job the way the TUI
+		// would, and say plainly what happened either way.
+		trust, err := trustCodexHooks(cmd.Context(), realCodex, io.Discard)
+		switch {
+		case err != nil:
+			fmt.Fprintf(cmd.OutOrStdout(), "codex   could not trust the hooks (%v)\n", err)
 			fmt.Fprint(cmd.OutOrStdout(), `
-Codex hooks land untrusted and do not fire until you approve them. Trust is
-pinned to a hash of the hook configuration, so editing the command untrusts
-it again. Run codex and approve the cockpit hooks, or their status will stay
+Codex hooks land untrusted and do not fire until approved. Run codex, open
+its hooks view, and trust the cockpit hooks, or their status will stay
 inferred.
 `)
+		case trust.Trusted > 0:
+			fmt.Fprintf(cmd.OutOrStdout(), "codex   trusted %d hooks; they are live\n", trust.Trusted)
+		default:
+			fmt.Fprintf(cmd.OutOrStdout(), "codex   %d hooks already trusted\n", trust.Already)
 		}
 		return nil
 	},
