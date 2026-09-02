@@ -261,3 +261,35 @@ func TestRemoteInstallNeedsTheRemoteBinaryPath(t *testing.T) {
 		t.Errorf("a host with no cockpit path must say so plainly, got %v", err)
 	}
 }
+
+func TestInstallClaudeSkipsAMachineWithoutClaude(t *testing.T) {
+	// No ~/.claude directory means Claude Code has never run here. Creating
+	// its settings file for it would be tidy-looking clutter.
+	path := filepath.Join(t.TempDir(), ".claude", "settings.json")
+
+	report, err := installClaudeHooks(path, bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Skipped {
+		t.Error("want the engine reported as absent")
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("settings.json was created for an engine that is not installed")
+	}
+}
+
+func TestInstallCodexSkipsAMachineWithoutCodex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".codex", "config.toml")
+
+	report, err := installCodexHooks(path, bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Skipped {
+		t.Error("want the engine reported as absent")
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("config.toml was created for an engine that is not installed")
+	}
+}

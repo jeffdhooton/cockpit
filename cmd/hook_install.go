@@ -36,6 +36,15 @@ type installReport struct {
 	Path    string
 	Added   int  // entries written this run; 0 means already present
 	Trusted bool // Codex only: a trust entry exists for at least one hook
+	Skipped bool // the engine's config directory does not exist: it is not installed here
+}
+
+// engineAbsent reports whether an engine has never run on this machine. Its
+// config directory is created on first launch, so a missing one means there
+// is nothing to install into.
+func engineAbsent(path string) bool {
+	_, err := os.Stat(filepath.Dir(path))
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 var hookInstallHost string
@@ -67,14 +76,14 @@ daemon and its status lands in its own tmux, which cockpit here already reads.`,
 		if err != nil {
 			return fmt.Errorf("claude: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "claude  %s  %s\n", claude.Path, added(claude.Added))
+		fmt.Fprintf(cmd.OutOrStdout(), "claude  %s\n", describe(claude))
 
 		codex, err := installCodexHooks(filepath.Join(home, ".codex", "config.toml"), bin)
 		if err != nil {
 			return fmt.Errorf("codex: %w", err)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "codex   %s  %s\n", codex.Path, added(codex.Added))
-		if !codex.Trusted {
+		fmt.Fprintf(cmd.OutOrStdout(), "codex   %s\n", describe(codex))
+		if !codex.Skipped && !codex.Trusted {
 			fmt.Fprint(cmd.OutOrStdout(), `
 Codex hooks land untrusted and do not fire until you approve them. Trust is
 pinned to a hash of the hook configuration, so editing the command untrusts
@@ -120,11 +129,15 @@ func remoteInstallScript(host config.HostConfig) (string, error) {
 	return sources.QuoteRemotePath(host.Cockpit) + " 'hook' 'install'", nil
 }
 
-func added(n int) string {
-	if n == 0 {
-		return "already installed"
+func describe(r installReport) string {
+	switch {
+	case r.Skipped:
+		return "not installed on this machine, skipped"
+	case r.Added == 0:
+		return r.Path + "  already installed"
+	default:
+		return fmt.Sprintf("%s  added %d hooks", r.Path, r.Added)
 	}
-	return fmt.Sprintf("added %d hooks", n)
 }
 
 // backup copies path aside with a timestamp, the way register-mcp.sh does. A
@@ -148,6 +161,10 @@ func backup(path string) error {
 // list. One new group per event is appended beside whatever is there.
 func installClaudeHooks(path, bin string) (installReport, error) {
 	report := installReport{Path: path}
+	if engineAbsent(path) {
+		report.Skipped = true
+		return report, nil
+	}
 
 	settings := map[string]any{}
 	raw, err := os.ReadFile(path)
@@ -226,6 +243,10 @@ func claudeHasHook(groups []any, command string) bool {
 // that header to the end of the file on every run.
 func installCodexHooks(path, bin string) (installReport, error) {
 	report := installReport{Path: path}
+	if engineAbsent(path) {
+		report.Skipped = true
+		return report, nil
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
