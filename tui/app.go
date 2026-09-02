@@ -185,6 +185,7 @@ type Model struct {
 	viz            VizModel
 	github         *sources.GitHubStatus
 	processes      map[string][]sources.ProcessInfo // repo label → configured process state
+	hosts          map[string]hostState             // remote host → last poll and link state
 	sessionPreview string
 	lastPreviewSession string
 
@@ -265,7 +266,17 @@ func (m Model) Init() tea.Cmd {
 		m.localTick(),
 		m.remoteTick(),
 		m.vizTick(),
+		m.fetchHosts(),
 	)
+}
+
+// fetchHosts starts a poll of every configured remote host.
+func (m Model) fetchHosts() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, h := range m.config.Hosts {
+		cmds = append(cmds, m.fetchHost(h))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -356,6 +367,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case processDataMsg:
 		m.processes = msg.ByLabel
+
+	case hostDataMsg:
+		if m.hosts == nil {
+			m.hosts = map[string]hostState{}
+		}
+		m.hosts[msg.Host] = mergeHost(m.hosts[msg.Host], msg.hostPoll)
+		if h, ok := m.config.Host(msg.Host); ok {
+			cmds = append(cmds, m.hostTick(h))
+		}
+
+	case hostTickMsg:
+		if h, ok := m.config.Host(msg.Host); ok {
+			cmds = append(cmds, m.fetchHost(h))
+		}
 
 	case sourceErrMsg:
 		m.transientErr = "⚠ " + msg.Source + ": " + msg.Err.Error()
@@ -993,7 +1018,7 @@ func (m Model) fetchTmux() tea.Cmd {
 }
 
 func (m Model) fetchGit() tea.Cmd {
-	repos := m.config.Repos
+	repos := m.localRepos()
 	return func() tea.Msg {
 		results := sources.GetGitStatus(context.Background(), sources.LocalCommandRunner{}, repos)
 		return gitDataMsg{Repos: results}
@@ -1026,7 +1051,7 @@ func (m Model) fetchGitHub() tea.Cmd {
 	if !m.config.GitHub.Enabled {
 		return nil
 	}
-	repos := m.config.Repos
+	repos := m.localRepos()
 	return func() tea.Msg {
 		status := sources.GetGitHubStatus(context.Background(), repos)
 		return githubDataMsg{Status: status}
@@ -1038,7 +1063,7 @@ func (m Model) fetchGitHub() tea.Cmd {
 // never configured any.
 func (m Model) fetchProcesses() tea.Cmd {
 	var repos []config.RepoConfig
-	for _, r := range m.config.Repos {
+	for _, r := range m.localRepos() {
 		if len(r.Processes) > 0 {
 			repos = append(repos, r)
 		}

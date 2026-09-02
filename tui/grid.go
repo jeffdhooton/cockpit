@@ -24,7 +24,10 @@ type Target struct {
 	// StatusReported is true when Status came from an agent hook rather than
 	// the pane-hash guess. The tile dims a guess so it never reads as a fact.
 	StatusReported bool
-	Processes      []sources.ProcessInfo
+	// Unreachable is true when the target's host failed its last poll. The
+	// data shown is last-known, and the tile says so.
+	Unreachable bool
+	Processes   []sources.ProcessInfo
 }
 
 // Running reports whether the target has a live tmux session behind it.
@@ -46,7 +49,7 @@ func (t Target) Name() string { return t.Key() }
 // never delay the grid.
 func AttachProcesses(targets []Target, byLabel map[string][]sources.ProcessInfo) []Target {
 	for i := range targets {
-		if infos, ok := byLabel[targets[i].Label]; ok {
+		if infos, ok := byLabel[targets[i].Key()]; ok {
 			targets[i].Processes = infos
 		}
 	}
@@ -225,7 +228,10 @@ func renderTile(t Target, width int, selected bool) string {
 	// Shape carries session existence: a hollow ring means there is nothing to
 	// attach to, while every live session keeps the filled status dot.
 	status := StatusRing("no session", VariantMuted)
-	if t.Running() {
+	if t.Unreachable {
+		// Last-known data under a warning, never a blank tile.
+		status = WarningText.Render("⚠ " + Truncate("unreachable", inner-2))
+	} else if t.Running() {
 		status = StatusDot("detached", VariantMuted)
 		if t.Session.Attached {
 			status = StatusDot("attached", VariantAccent)
@@ -395,8 +401,38 @@ func (m Model) gridContentWidth() int {
 
 // gridTargets builds the current tile list from live sessions and configured repos.
 func (m Model) gridTargets() []Target {
-	targets := BuildTargets(m.sessions.Sessions, m.repos.Repos, m.sessions.Statuses, m.config.General.SessionName)
-	return AttachProcesses(targets, m.processes)
+	sessions := append(append([]sources.TmuxSession{}, m.sessions.Sessions...), m.remoteSessions()...)
+	repos := append(append([]sources.GitRepoStatus{}, m.repos.Repos...), m.remoteRepos()...)
+
+	// Local statuses come from the sessions model, which also holds the
+	// pane-hash guesses. A remote session carries its own reported status
+	// and is never guessed.
+	statuses := make(map[string]sources.AgentStatus, len(m.sessions.Statuses)+len(sessions))
+	for k, v := range m.sessions.Statuses {
+		statuses[k] = v
+	}
+	for _, s := range sessions {
+		if s.Host != "" && s.StatusReported {
+			statuses[s.Key()] = s.Status
+		}
+	}
+
+	targets := BuildTargets(sessions, repos, statuses, m.config.General.SessionName)
+	for i := range targets {
+		if targets[i].Host == "" {
+			continue
+		}
+		targets[i].Unreachable = m.hosts[targets[i].Host].unreachable
+	}
+
+	processes := make(map[string][]sources.ProcessInfo, len(m.processes))
+	for k, v := range m.processes {
+		processes[k] = v
+	}
+	for k, v := range m.remoteProcesses() {
+		processes[k] = v
+	}
+	return AttachProcesses(targets, processes)
 }
 
 // gridView renders the unified grid, plus the session preview on desktop widths.

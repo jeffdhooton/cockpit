@@ -698,3 +698,18 @@ func TestRenderTileShowsHostPrefix(t *testing.T) {
 		t.Errorf("remote tile must name its host:\n%s", out)
 	}
 }
+
+func TestRenderTileShowsUnreachableOverLastKnownData(t *testing.T) {
+	s := sess("docket")
+	s.Host = "mini"
+	r := repo("docket")
+	r.Host = "mini"
+	out := renderTile(Target{Label: "docket", Host: "mini", Session: &s, Repo: &r, Unreachable: true}, 22, false)
+
+	if !strings.Contains(out, "unreachable") {
+		t.Errorf("a dead link must be named:\n%s", out)
+	}
+	if !strings.Contains(out, "main") {
+		t.Errorf("last-known branch must still show:\n%s", out)
+	}
+}
