@@ -410,3 +410,43 @@ func TestDirIsTheParentOfTheConfigFile(t *testing.T) {
 		t.Errorf("config path %q is not inside dir %q", got, dir)
 	}
 }
+
+func TestHostConfigIsValidated(t *testing.T) {
+	base := "[obsidian]\nvault_path = \"/v\"\n"
+	cases := map[string]string{
+		"undeclared host": "[[repos]]\nhost = \"nope\"\npath = \"/r\"\nlabel = \"a\"\n",
+		"relative tmux":   "[[hosts]]\nname = \"mini\"\ntmux = \"tmux\"\n",
+		"bad host name":   "[[hosts]]\nname = \"mi ni\"\ntmux = \"/usr/bin/tmux\"\n",
+		"missing tmux":    "[[hosts]]\nname = \"mini\"\n",
+		"duplicate host":  "[[hosts]]\nname = \"mini\"\ntmux = \"/usr/bin/tmux\"\n[[hosts]]\nname = \"mini\"\ntmux = \"/usr/bin/tmux\"\n",
+	}
+	for name, body := range cases {
+		if err := loadErr(t, base+body); err == nil {
+			t.Errorf("%s: want a validation error", name)
+		}
+	}
+}
+
+func TestRemoteRepoPathIsNotExpandedLocally(t *testing.T) {
+	// ~ on mini is /Users/jclaw, not this machine's home. Expanding it here
+	// would point every remote repo at a directory that does not exist there.
+	cfg := writeAndLoad(t, "[obsidian]\nvault_path = \"/v\"\n"+
+		"[[hosts]]\nname = \"mini\"\ntmux = \"/opt/homebrew/bin/tmux\"\n"+
+		"[[repos]]\nhost = \"mini\"\npath = \"~/workspace/docket\"\nlabel = \"docket\"\n")
+
+	if cfg.Repos[0].Path != "~/workspace/docket" {
+		t.Errorf("remote path was expanded to %q", cfg.Repos[0].Path)
+	}
+	if h, ok := cfg.Host("mini"); !ok || h.Tmux != "/opt/homebrew/bin/tmux" {
+		t.Errorf("host lookup = %+v, %v", h, ok)
+	}
+}
+
+func TestRepoKeyQualifiesRemote(t *testing.T) {
+	if got := (RepoConfig{Label: "docket"}).Key(); got != "docket" {
+		t.Errorf("local key = %q", got)
+	}
+	if got := (RepoConfig{Host: "mini", Label: "docket"}).Key(); got != "mini/docket" {
+		t.Errorf("remote key = %q", got)
+	}
+}

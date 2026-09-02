@@ -18,6 +18,9 @@ const DefaultDaemonPort = 45679
 // name without quoting.
 var validProcessName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// validHostName shares the label grammar, so host/label is unambiguous.
+var validHostName = validProcessName
+
 type Config struct {
 	General  GeneralConfig  `toml:"general"`
 	Obsidian ObsidianConfig `toml:"obsidian"`
@@ -25,6 +28,7 @@ type Config struct {
 	GitHub   GitHubConfig   `toml:"github"`
 	Signals  SignalsConfig  `toml:"signals"`
 	Daemon   DaemonConfig   `toml:"daemon"`
+	Hosts    []HostConfig   `toml:"hosts"`
 }
 
 type GeneralConfig struct {
@@ -40,9 +44,44 @@ type ObsidianConfig struct {
 }
 
 type RepoConfig struct {
-	Path      string          `toml:"path"`
-	Label     string          `toml:"label"`
+	Path  string `toml:"path"`
+	Label string `toml:"label"`
+	// Host names a [[hosts]] entry. Empty means this machine. A remote
+	// path is left exactly as written, because ~ belongs to the remote user.
+	Host      string          `toml:"host"`
 	Processes []ProcessConfig `toml:"processes"`
+}
+
+// Key identifies the repo across hosts: host/label remotely, label locally.
+// validLabel forbids "/", so the qualified form cannot collide with a bare one.
+func (r RepoConfig) Key() string {
+	if r.Host == "" {
+		return r.Label
+	}
+	return r.Host + "/" + r.Label
+}
+
+// HostConfig is a machine cockpit reaches over SSH. Name is an ssh config
+// alias, resolved by ssh itself so Include, Match, and per-host identity
+// settings are honoured for free.
+type HostConfig struct {
+	Name string `toml:"name"`
+	// Tmux is the absolute path of tmux on that machine. Required: a bare
+	// ssh command gets the non-login PATH, which on a Mac excludes Homebrew.
+	Tmux string `toml:"tmux"`
+	// Cockpit is the absolute path of cockpit on that machine, when installed.
+	// It enables `cockpit hook install --host`.
+	Cockpit string `toml:"cockpit"`
+}
+
+// Host looks up a declared host by name.
+func (c *Config) Host(name string) (HostConfig, bool) {
+	for _, h := range c.Hosts {
+		if h.Name == name {
+			return h, true
+		}
+	}
+	return HostConfig{}, false
 }
 
 // ProcessConfig declares a background process for a repo. Each one launches as
@@ -217,6 +256,9 @@ func expandPaths(cfg *Config) {
 	cfg.Obsidian.TodayFile = ExpandTilde(cfg.Obsidian.TodayFile)
 	cfg.Obsidian.InboxFile = ExpandTilde(cfg.Obsidian.InboxFile)
 	for i := range cfg.Repos {
+		if cfg.Repos[i].Host != "" {
+			continue
+		}
 		cfg.Repos[i].Path = ExpandTilde(cfg.Repos[i].Path)
 		for j := range cfg.Repos[i].Processes {
 			p := &cfg.Repos[i].Processes[j]
@@ -244,6 +286,33 @@ func validate(cfg *Config) error {
 	}
 	if err := validateProcesses(cfg); err != nil {
 		return err
+	}
+	if err := validateHosts(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateHosts fails at load rather than at the first poll. A bad host
+// would otherwise show up as an empty grid with no explanation.
+func validateHosts(cfg *Config) error {
+	seen := map[string]bool{}
+	for _, h := range cfg.Hosts {
+		if !validHostName.MatchString(h.Name) {
+			return fmt.Errorf("config: host %q: name must be alphanumeric, hyphens, or underscores", h.Name)
+		}
+		if seen[h.Name] {
+			return fmt.Errorf("config: duplicate host %q", h.Name)
+		}
+		seen[h.Name] = true
+		if !strings.HasPrefix(h.Tmux, "/") {
+			return fmt.Errorf("config: host %q: tmux must be an absolute path, got %q", h.Name, h.Tmux)
+		}
+	}
+	for _, r := range cfg.Repos {
+		if r.Host != "" && !seen[r.Host] {
+			return fmt.Errorf("config: repo %q names host %q, which is not declared under [[hosts]]", r.Label, r.Host)
+		}
 	}
 	return nil
 }
