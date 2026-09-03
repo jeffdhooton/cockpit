@@ -8,12 +8,12 @@ A tmux-native terminal dashboard for developers juggling multiple projects. One 
 ```
 ┌─ COCKPIT ────────────────────────────────────────┐
 │ ╭────────────╮ ╭────────────╮ ╭────────────╮     │
-│ │ my-app     │ │ scry       │ │ side-proj  │     │
+│ │ 1 my-app   │ │ 2 scry     │ │ 3 side-proj│     │
 │ │ ● working  │ │ ● idle 4m  │ │ ● attached │     │
 │ │ feat/auth✗3│ │ main ✓ ↑2  │ │ main ✓     │     │
 │ ╰────────────╯ ╰────────────╯ ╰────────────╯     │
 │ ╭────────────╮ ╭────────────╮                    │
-│ │ dotfiles   │ │ notes      │                    │
+│ │   dotfiles │ │   notes    │                    │
 │ │ ● no session │ ● no session                    │
 │ │ main ✓     │ │ main ✗ 3   │                    │
 │ ╰────────────╯ ╰────────────╯                    │
@@ -21,13 +21,14 @@ A tmux-native terminal dashboard for developers juggling multiple projects. One 
 │ $ go test ./...                                  │
 │ ok  github.com/you/my-app  0.31s                 │
 ├──────────────────────────────────────────────────┤
-│ HJKL nav · ENTER jump · N new · / find · D dash  │
+│ HJKL nav · 1-0 open · ENTER jump · N new · D dash│
 └──────────────────────────────────────────────────┘
 ```
 
 ## What it does
 
-- **Grid** — Running tmux sessions and saved repos as one grid. `hjkl` to move, Enter to jump; a dormant repo gets a session created on the spot. The grid packs in as many tiles as fit — a dozen across on an ultrawide, down to one on a phone over SSH. Tiles stay a readable width; extra room buys more of them rather than wider ones.
+- **Grid** — Running tmux sessions and saved repos as one grid. `hjkl` to move, Enter to jump; a dormant repo gets a session created on the spot. The first ten running sessions carry a digit — press `1`-`9` or `0` to drop straight into one without moving the cursor there first. The grid packs in as many tiles as fit — a dozen across on an ultrawide, down to one on a phone over SSH. Tiles stay a readable width; extra room buys more of them rather than wider ones.
+- **On a phone** — Below 70 columns the tile collapses to a single line: the status marker and the name, nothing else. Branch, dirty counts and process counts are desktop detail. Three rows a tile instead of five means half again as many sessions on the screen, and the digits mean reaching one is a single keystroke.
 - **Dashboard** — Press `d` for the full five-panel view below. Set `default_view = "dashboard"` in config.toml to make it the startup view.
 - **Sessions** — See all running tmux sessions. Press Enter to jump to one, or auto-create a new session from a repo.
 - **Repos** — Git status across all your projects: branch, dirty/clean, unpushed commits, last commit message.

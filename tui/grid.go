@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -30,6 +31,10 @@ type Target struct {
 	// data shown is last-known, and the tile says so.
 	Unreachable bool
 	Processes   []sources.ProcessInfo
+	// Hotkey is the digit that jumps straight to this target, 1-10, or 0 when
+	// it has none. Only targets with a live session get one: a digit is a
+	// shortcut into something already open, not a way to start something.
+	Hotkey int
 	// Hermes is set on the tile for a Hermes gateway. It has no repo. With a
 	// Host, Enter opens a shell on that machine and the shell's tmux session
 	// is folded into this tile; without one the tile is read-only.
@@ -62,6 +67,38 @@ func AttachProcesses(targets []Target, byLabel map[string][]sources.ProcessInfo)
 		}
 	}
 	return targets
+}
+
+// hotkeyMax is how many targets can carry a digit: the ten keys 1-9 and 0.
+const hotkeyMax = 10
+
+// AssignHotkeys numbers the first ten running targets in grid order, so the
+// digit on a tile is the digit that jumps to it. Dormant repos are skipped —
+// a digit takes you to a session that already exists.
+func AssignHotkeys(targets []Target) []Target {
+	next := 1
+	for i := range targets {
+		targets[i].Hotkey = 0
+		if next > hotkeyMax || !targets[i].Running() {
+			continue
+		}
+		targets[i].Hotkey = next
+		next++
+	}
+	return targets
+}
+
+// hotkeyLabel renders a hotkey as the key you press: 1-9, then 0 for the tenth.
+// An unassigned target renders as nothing.
+func hotkeyLabel(n int) string {
+	switch {
+	case n < 1 || n > hotkeyMax:
+		return ""
+	case n == hotkeyMax:
+		return "0"
+	default:
+		return strconv.Itoa(n)
+	}
 }
 
 // processIndicator renders the live/configured process count for a tile,
@@ -181,6 +218,10 @@ const (
 	gridMaxCellWidth = 28
 	// gridTileH is a tile's total height: 3 content lines + 2 border rows.
 	gridTileH = 5
+	// gridCompactTileH is the mobile tile's height: 1 content line + 2 border
+	// rows. Two thirds of the footprint buys half again as many tiles on the
+	// one screen size where they are scarcest.
+	gridCompactTileH = 3
 
 	// MobileMaxWidth is the threshold below which the preview is dropped and the
 	// grid takes the full screen.
@@ -249,14 +290,57 @@ func resolveGridCursor(targets []Target, label string, prev int) int {
 	return prev
 }
 
+// tileMarker is the tile's state in a single cell: shape carries whether a
+// session exists, colour carries what the agent is doing. It is what the
+// compact tile shows in place of renderTile's labelled status line, which
+// draws the same glyph with its name beside it.
+func tileMarker(t Target) string {
+	glyph, v := "●", VariantMuted
+	switch {
+	case t.Hermes != nil:
+		switch {
+		case !t.Hermes.Reachable:
+			glyph, v = "⚠", VariantWarning
+		case t.Hermes.Gateway == "running":
+			v = VariantAccent
+		default:
+			v = VariantWarning
+		}
+	case t.Unreachable:
+		glyph, v = "⚠", VariantWarning
+	case !t.Running():
+		glyph, v = "○", VariantMuted
+	case t.Status == sources.AgentStatusNeedsInput:
+		v = VariantWarning
+	case t.Status == sources.AgentStatusWorking:
+		v = VariantAccent
+	case t.Status == sources.AgentStatusIdle:
+		v = VariantNeutral
+	case t.Session.Attached:
+		v = VariantAccent
+	}
+	return lipgloss.NewStyle().Foreground(variantColor(v)).Render(glyph)
+}
+
 // renderTile draws one target: label, status, and git state. Every piece is
 // truncated to the inner width before styling, so the tile can never wrap and
-// blow its 3-line content budget.
-func renderTile(t Target, width int, selected bool) string {
+// blow its 3-line content budget. A compact tile keeps only the marker and the
+// name, on one line.
+func renderTile(t Target, width int, selected, compact bool) string {
 	inner := width - 4 // 2 border cells + 2 padding cells
 	if inner < 6 {
 		inner = 6
 	}
+
+	// The hotkey leads the tile so the eye pairs the digit with the name it
+	// jumps to. Its two cells are spent whether or not the tile has a digit:
+	// a column of digits only reads as a column if the tiles without one hold
+	// the space open.
+	key := "  "
+	if lbl := hotkeyLabel(t.Hotkey); lbl != "" {
+		key = MutedText.Render(lbl) + " "
+	}
+	nameW := inner - 2
 
 	nameStyle := BoldText
 	switch {
@@ -265,7 +349,27 @@ func renderTile(t Target, width int, selected bool) string {
 	case !t.Running():
 		nameStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 	}
-	name := nameStyle.Render(Truncate(t.Name(), inner))
+
+	borderColor := ColorBorder
+	if selected {
+		borderColor = ColorAccent
+	}
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(0, 1).
+		// lipgloss Width counts padding but not border; inner is the text budget.
+		Width(inner + 2)
+
+	// On a phone the name is the whole point, so it gets the line and the
+	// marker gets the cell beside it. Branch, dirty counts and the process
+	// indicator do not survive the trip.
+	if compact {
+		return box.Height(1).MaxHeight(gridCompactTileH).
+			Render(key + tileMarker(t) + " " + nameStyle.Render(Truncate(t.Name(), nameW-2)))
+	}
+
+	name := key + nameStyle.Render(Truncate(t.Name(), nameW))
 
 	// Shape carries session existence: a hollow ring means there is nothing to
 	// attach to, while every live session keeps the filled status dot.
@@ -344,35 +448,32 @@ func renderTile(t Target, width int, selected bool) string {
 		}
 	}
 
-	borderColor := ColorBorder
-	if selected {
-		borderColor = ColorAccent
-	}
+	return box.Height(3).MaxHeight(gridTileH).Render(name + "\n" + status + "\n" + git)
+}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Padding(0, 1).
-		// lipgloss Width counts padding but not border; inner is the text budget.
-		Width(inner + 2).
-		Height(3).
-		MaxHeight(gridTileH).
-		Render(name + "\n" + status + "\n" + git)
+// tileHeight is a tile's row footprint for the current layout.
+func tileHeight(compact bool) int {
+	if compact {
+		return gridCompactTileH
+	}
+	return gridTileH
 }
 
 // RenderGrid lays targets out in a responsive grid, scrolling by row to keep the
-// cursor visible and appending a muted count when tiles are clipped.
-func RenderGrid(targets []Target, cursor, width, height int) string {
+// cursor visible and appending a muted count when tiles are clipped. Compact
+// draws the shorter mobile tile, which fits half again as many rows.
+func RenderGrid(targets []Target, cursor, width, height int, compact bool) string {
 	if len(targets) == 0 {
 		return MutedText.Render("No sessions or repos. Add repos in ") +
 			AccentText.Render("~/.config/cockpit/config.toml")
 	}
 
+	tileH := tileHeight(compact)
 	cols := GridCols(width)
 	cellW := width / cols
 	rows := (len(targets) + cols - 1) / cols
 
-	visibleRows := height / gridTileH
+	visibleRows := height / tileH
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
@@ -388,10 +489,10 @@ func RenderGrid(targets []Target, cursor, width, height int) string {
 		for c := 0; c < cols; c++ {
 			i := r*cols + c
 			if i >= len(targets) {
-				cells = append(cells, lipgloss.NewStyle().Width(cellW).Height(gridTileH).Render(""))
+				cells = append(cells, lipgloss.NewStyle().Width(cellW).Height(tileH).Render(""))
 				continue
 			}
-			cells = append(cells, renderTile(targets[i], cellW, i == cursor))
+			cells = append(cells, renderTile(targets[i], cellW, i == cursor, compact))
 		}
 		out = append(out, lipgloss.JoinHorizontal(lipgloss.Top, cells...))
 	}
@@ -489,7 +590,9 @@ func (m Model) gridTargets() []Target {
 	for k, v := range m.remoteProcesses() {
 		processes[k] = v
 	}
-	return AttachProcesses(targets, processes)
+	// Hotkeys are assigned here, once, so the digit drawn on a tile and the
+	// digit handleGridKey resolves are read off the same list.
+	return AssignHotkeys(AttachProcesses(targets, processes))
 }
 
 // gridView renders the unified grid, plus the session preview on desktop widths.
@@ -502,22 +605,27 @@ func (m Model) gridView() string {
 		hints = WarningText.Render(m.transientErr)
 	}
 
+	// A phone gets the compact tile: no preview to compete with, and the rows
+	// it saves are the rows it has fewest of.
+	compact := m.width < MobileMaxWidth
+	tileH := tileHeight(compact)
+
 	body := m.height - 1 // keyhints row
-	if body < gridTileH {
-		body = gridTileH
+	if body < tileH {
+		body = tileH
 	}
 
 	gridH := body
 	showPreview := m.width >= MobileMaxWidth && len(targets) > 0
 	if showPreview {
 		gridH = body * 3 / 5
-		if gridH < gridTileH+3 {
-			gridH = gridTileH + 3
+		if gridH < tileH+3 {
+			gridH = tileH + 3
 		}
 	}
 
 	// Panel chrome eats 2 border rows + 1 title row on top of the content width.
-	grid := RenderGrid(targets, cursor, m.gridContentWidth(), gridH-3)
+	grid := RenderGrid(targets, cursor, m.gridContentWidth(), gridH-3, compact)
 	page := RenderPanel("Cockpit", grid, m.width, gridH, true)
 
 	if showPreview {
@@ -601,6 +709,20 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	repo := m.repoForLabel(t.Label, t.Repo.Path)
 	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
+}
+
+// enterHotkey jumps to the target carrying a digit, taking the selection with
+// it so the tile you land on is the one left selected. An unbound digit does
+// nothing: guessing at a neighbour would switch you into the wrong session.
+func (m *Model) enterHotkey(targets []Target, key string) tea.Cmd {
+	for i := range targets {
+		if hotkeyLabel(targets[i].Hotkey) != key {
+			continue
+		}
+		m.setGridCursor(targets, i)
+		return m.enterTarget(targets, i)
+	}
+	return nil
 }
 
 // hermesStatusLine renders the gateway state: running in the accent colour,
@@ -689,6 +811,8 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 		return move(0, 1)
 	case "enter":
 		return m.enterTarget(targets, idx)
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "0":
+		return m.enterHotkey(targets, msg.String())
 	case "d":
 		m.view = ViewDashboard
 		return nil

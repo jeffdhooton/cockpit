@@ -134,7 +134,7 @@ func TestRenderAndKeysAgreeOnColumnCount(t *testing.T) {
 		targets := m.gridTargets()
 
 		// Columns the renderer actually drew, counted as tiles on the first row.
-		firstRow := strings.Split(RenderGrid(targets, 0, m.gridContentWidth(), 40), "\n")[0]
+		firstRow := strings.Split(RenderGrid(targets, 0, m.gridContentWidth(), 40, false), "\n")[0]
 		drawn := strings.Count(firstRow, "╭")
 
 		// Columns a single `j` moves by.
@@ -153,7 +153,7 @@ func TestGridIsTwoWideAtPhoneWidth(t *testing.T) {
 	m := gridTestModel(44, 24)
 	m.sessions.Sessions = []sources.TmuxSession{sess("aa"), sess("bb"), sess("cc"), sess("dd")}
 	m.repos.Repos = nil
-	firstRow := strings.Split(RenderGrid(m.gridTargets(), 0, m.gridContentWidth(), 20), "\n")[0]
+	firstRow := strings.Split(RenderGrid(m.gridTargets(), 0, m.gridContentWidth(), 20, false), "\n")[0]
 	if got := strings.Count(firstRow, "╭"); got != 2 {
 		t.Errorf("44-col terminal drew %d tiles per row, want 2:\n%s", got, firstRow)
 	}
@@ -239,7 +239,7 @@ func TestRenderGridFitsWidth(t *testing.T) {
 		nil, "cockpit",
 	)
 	for _, width := range []int{40, 55, 120} {
-		out := RenderGrid(targets, 0, width, 20)
+		out := RenderGrid(targets, 0, width, 20, false)
 		for i, line := range strings.Split(out, "\n") {
 			if w := lipgloss.Width(line); w > width {
 				t.Errorf("width=%d: line %d is %d cells wide: %q", width, i, w, line)
@@ -255,7 +255,7 @@ func TestRenderGridHandlesOddAndEmptyCounts(t *testing.T) {
 			sessions = append(sessions, sess(string(rune('a'+i))))
 		}
 		targets := BuildTargets(sessions, nil, nil, "cockpit")
-		out := RenderGrid(targets, 0, 44, 20) // must not panic
+		out := RenderGrid(targets, 0, 44, 20, false) // must not panic
 		if out == "" {
 			t.Errorf("n=%d: RenderGrid returned empty string", n)
 		}
@@ -269,7 +269,7 @@ func TestRenderGridShowsMoreIndicatorWhenClipped(t *testing.T) {
 	}
 	targets := BuildTargets(sessions, nil, nil, "cockpit")
 	// height 10 fits 2 rows of 2 columns = 4 tiles, leaving 8 hidden.
-	out := RenderGrid(targets, 0, 44, 10)
+	out := RenderGrid(targets, 0, 44, 10, false)
 	if !strings.Contains(out, "more") {
 		t.Errorf("clipped grid should show a 'more' indicator, got:\n%s", out)
 	}
@@ -282,7 +282,7 @@ func TestRenderGridScrollsToKeepCursorVisible(t *testing.T) {
 	}
 	targets := BuildTargets(sessions, nil, nil, "cockpit")
 	last := len(targets) - 1
-	out := RenderGrid(targets, last, 44, 10)
+	out := RenderGrid(targets, last, 44, 10, false)
 	if !strings.Contains(out, targets[last].Label) {
 		t.Errorf("selected target %q not visible in clipped grid:\n%s", targets[last].Label, out)
 	}
@@ -294,7 +294,7 @@ func TestRenderTileShowsGitStateForDormantRepo(t *testing.T) {
 	r.Dirty = true
 	r.DirtyCount = 3
 	targets := BuildTargets(nil, []sources.GitRepoStatus{r}, nil, "cockpit")
-	out := renderTile(targets[0], 22, false)
+	out := renderTile(targets[0], 22, false, false)
 	if !strings.Contains(out, "main") {
 		t.Errorf("dormant tile should show its branch, got:\n%s", out)
 	}
@@ -310,8 +310,8 @@ func TestRenderTileDistinguishesIdleFromNoSession(t *testing.T) {
 	dormantRepo := repo("dormant-app")
 	dormant := Target{Label: dormantRepo.Label, Repo: &dormantRepo}
 
-	idleOut := renderTile(idle, 22, false)
-	dormantOut := renderTile(dormant, 22, false)
+	idleOut := renderTile(idle, 22, false, false)
+	dormantOut := renderTile(dormant, 22, false, false)
 
 	if !strings.Contains(idleOut, "●") || strings.Contains(idleOut, "○") {
 		t.Errorf("idle session should use only the filled live-session marker:\n%s", idleOut)
@@ -326,7 +326,7 @@ func TestRenderTileDistinguishesIdleFromNoSession(t *testing.T) {
 func TestRenderTileFillsItsCell(t *testing.T) {
 	targets := BuildTargets([]sources.TmuxSession{sess("my-app")}, nil, nil, "cockpit")
 	for _, width := range []int{18, 20, 29} {
-		out := renderTile(targets[0], width, false)
+		out := renderTile(targets[0], width, false, false)
 		for i, line := range strings.Split(out, "\n") {
 			if w := lipgloss.Width(line); w != width {
 				t.Errorf("renderTile(width=%d) line %d is %d cells: %q", width, i, w, line)
@@ -337,7 +337,7 @@ func TestRenderTileFillsItsCell(t *testing.T) {
 
 func TestRenderTileHeight(t *testing.T) {
 	targets := BuildTargets([]sources.TmuxSession{sess("my-app")}, nil, nil, "cockpit")
-	out := renderTile(targets[0], 22, true)
+	out := renderTile(targets[0], 22, true, false)
 	if got := len(strings.Split(out, "\n")); got != gridTileH {
 		t.Errorf("tile height = %d lines, want %d", got, gridTileH)
 	}
@@ -580,7 +580,7 @@ func TestRenderTileShowsProcessIndicator(t *testing.T) {
 			{Name: "dev", State: sources.ProcessRunning, Configured: true},
 		},
 	}
-	out := renderTile(target, 24, false)
+	out := renderTile(target, 24, false, false)
 	if !strings.Contains(out, "⚙") {
 		t.Errorf("a wide tile should show the process indicator:\n%s", out)
 	}
@@ -595,7 +595,7 @@ func TestRenderTileKeepsHeightWithProcesses(t *testing.T) {
 			{Name: "dev", State: sources.ProcessDead, Configured: true},
 		},
 	}
-	out := renderTile(target, 18, false)
+	out := renderTile(target, 18, false, false)
 	if got := lipgloss.Height(out); got != gridTileH {
 		t.Errorf("tile height = %d, want %d — the indicator must not add a line:\n%s", got, gridTileH, out)
 	}
@@ -604,7 +604,7 @@ func TestRenderTileKeepsHeightWithProcesses(t *testing.T) {
 func TestRenderTileShowsNeedsInput(t *testing.T) {
 	s := sess("app")
 	s.Status, s.StatusReported = sources.AgentStatusNeedsInput, true
-	out := renderTile(Target{Label: "app", Session: &s, Status: sources.AgentStatusNeedsInput, StatusReported: true}, 22, false)
+	out := renderTile(Target{Label: "app", Session: &s, Status: sources.AgentStatusNeedsInput, StatusReported: true}, 22, false, false)
 
 	if !strings.Contains(out, "needs you") {
 		t.Errorf("a blocked agent must say so:\n%s", out)
@@ -616,7 +616,7 @@ func TestRenderTileKeepsExistenceOnShape(t *testing.T) {
 	// status must not change the marker glyph.
 	s := sess("app")
 	s.Status, s.StatusReported = sources.AgentStatusWorking, true
-	out := renderTile(Target{Label: "app", Session: &s, Status: sources.AgentStatusWorking, StatusReported: true}, 22, false)
+	out := renderTile(Target{Label: "app", Session: &s, Status: sources.AgentStatusWorking, StatusReported: true}, 22, false, false)
 
 	if !strings.Contains(out, "●") || strings.Contains(out, "○") {
 		t.Errorf("a live session keeps the filled marker:\n%s", out)
@@ -695,7 +695,7 @@ func TestBuildTargetsExcludesViewSessions(t *testing.T) {
 func TestRenderTileShowsHostPrefix(t *testing.T) {
 	s := sess("docket")
 	s.Host = "mini"
-	out := renderTile(Target{Label: "docket", Host: "mini", Session: &s}, 22, false)
+	out := renderTile(Target{Label: "docket", Host: "mini", Session: &s}, 22, false, false)
 	if !strings.Contains(out, "mini/") {
 		t.Errorf("remote tile must name its host:\n%s", out)
 	}
@@ -706,7 +706,7 @@ func TestRenderTileShowsUnreachableOverLastKnownData(t *testing.T) {
 	s.Host = "mini"
 	r := repo("docket")
 	r.Host = "mini"
-	out := renderTile(Target{Label: "docket", Host: "mini", Session: &s, Repo: &r, Unreachable: true}, 22, false)
+	out := renderTile(Target{Label: "docket", Host: "mini", Session: &s, Repo: &r, Unreachable: true}, 22, false, false)
 
 	if !strings.Contains(out, "unreachable") {
 		t.Errorf("a dead link must be named:\n%s", out)
@@ -722,15 +722,15 @@ func hermesTarget(st sources.HermesStatus) Target {
 }
 
 func TestRenderTileHermesRunning(t *testing.T) {
-	out := renderTile(hermesTarget(sources.HermesStatus{Reachable: true, Gateway: "running", Platforms: []string{"photon", "slack"}}), 22, false)
+	out := renderTile(hermesTarget(sources.HermesStatus{Reachable: true, Gateway: "running", Platforms: []string{"photon", "slack"}}), 22, false, false)
 	if !strings.Contains(out, "gateway") || !strings.Contains(out, "photon") {
 		t.Errorf("want gateway state and platforms:\n%s", out)
 	}
 }
 
 func TestRenderTileHermesStoppedAndUnreachableDiffer(t *testing.T) {
-	stopped := renderTile(hermesTarget(sources.HermesStatus{Reachable: true, Gateway: "stopped"}), 22, false)
-	down := renderTile(hermesTarget(sources.HermesStatus{Reachable: false}), 22, false)
+	stopped := renderTile(hermesTarget(sources.HermesStatus{Reachable: true, Gateway: "stopped"}), 22, false, false)
+	down := renderTile(hermesTarget(sources.HermesStatus{Reachable: false}), 22, false, false)
 	if !strings.Contains(stopped, "stopped") {
 		t.Errorf("stopped must say stopped:\n%s", stopped)
 	}
@@ -877,7 +877,7 @@ func TestRenderGridLeavesNoRaggedGap(t *testing.T) {
 	// Tiles are capped, but the row should still span the content width so the
 	// panel's right border does not float away from the last tile.
 	const w = 336
-	out := RenderGrid(probeGridTargets(24), 0, w, 20)
+	out := RenderGrid(probeGridTargets(24), 0, w, 20, false)
 	for i, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "▼") {
 			continue
@@ -897,4 +897,272 @@ func probeGridTargets(n int) []Target {
 			Repo: &sources.GitRepoStatus{Label: "s", Branch: "main"}})
 	}
 	return out
+}
+
+func TestAssignHotkeysNumbersRunningTargetsOnly(t *testing.T) {
+	targets := AssignHotkeys(BuildTargets(
+		[]sources.TmuxSession{sess("alpha"), sess("zeta")},
+		[]sources.GitRepoStatus{repo("beta")},
+		nil, "cockpit",
+	))
+
+	if targets[0].Hotkey != 1 || targets[1].Hotkey != 2 {
+		t.Errorf("running targets should be numbered in grid order, got %d and %d",
+			targets[0].Hotkey, targets[1].Hotkey)
+	}
+	if targets[2].Hotkey != 0 {
+		t.Errorf("a dormant repo has no session to jump into, got hotkey %d", targets[2].Hotkey)
+	}
+}
+
+func TestAssignHotkeysStopsAfterTen(t *testing.T) {
+	var sessions []sources.TmuxSession
+	for i := 0; i < 12; i++ {
+		sessions = append(sessions, sess("s"+string(rune('a'+i))))
+	}
+	targets := AssignHotkeys(BuildTargets(sessions, nil, nil, "cockpit"))
+
+	if targets[9].Hotkey != 10 {
+		t.Errorf("the tenth running target takes the last digit, got %d", targets[9].Hotkey)
+	}
+	for _, tg := range targets[10:] {
+		if tg.Hotkey != 0 {
+			t.Errorf("%s is past the tenth target and must have no hotkey, got %d", tg.Label, tg.Hotkey)
+		}
+	}
+}
+
+func TestHotkeyLabelPutsTenOnZero(t *testing.T) {
+	cases := map[int]string{0: "", 1: "1", 9: "9", 10: "0", 11: ""}
+	for n, want := range cases {
+		if got := hotkeyLabel(n); got != want {
+			t.Errorf("hotkeyLabel(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+func TestCompactTileIsThreeRowsAndKeepsTheName(t *testing.T) {
+	r := repo("dotfiles")
+	r.Dirty, r.DirtyCount = true, 3
+	s := sess("dotfiles")
+	target := Target{Label: "dotfiles", Session: &s, Repo: &r,
+		Processes: []sources.ProcessInfo{{Name: "dev", State: sources.ProcessRunning, Configured: true}}}
+
+	out := renderTile(target, 22, false, true)
+
+	if got := lipgloss.Height(out); got != gridCompactTileH {
+		t.Errorf("compact tile is %d rows, want %d:\n%s", got, gridCompactTileH, out)
+	}
+	if !strings.Contains(out, "dotfiles") {
+		t.Errorf("the name is the one thing a compact tile must keep:\n%s", out)
+	}
+	for _, dropped := range []string{"main", "✗", "⚙"} {
+		if strings.Contains(out, dropped) {
+			t.Errorf("compact tile should drop %q to stay one line:\n%s", dropped, out)
+		}
+	}
+}
+
+// The compact tile carries state on the marker alone, so it must be the same
+// marker the full tile draws — these read the state from two places.
+func TestCompactTileMarkerMatchesFullTile(t *testing.T) {
+	running := sess("app")
+	dormantRepo := repo("app")
+	remote := sess("app")
+	remote.Host = "mini"
+
+	cases := []struct {
+		name   string
+		target Target
+	}{
+		{"running", Target{Label: "app", Session: &running}},
+		{"dormant", Target{Label: "app", Repo: &dormantRepo}},
+		{"unreachable", Target{Label: "app", Host: "mini", Session: &remote, Unreachable: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			compact := renderTile(c.target, 22, false, true)
+			full := renderTile(c.target, 22, false, false)
+			for _, glyph := range []string{"●", "○", "⚠"} {
+				if strings.Contains(full, glyph) != strings.Contains(compact, glyph) {
+					t.Errorf("marker %q differs between layouts:\ncompact:\n%s\nfull:\n%s",
+						glyph, compact, full)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderTileShowsItsHotkey(t *testing.T) {
+	s := sess("app")
+	for _, compact := range []bool{true, false} {
+		out := renderTile(Target{Label: "app", Session: &s, Hotkey: 1}, 22, false, compact)
+		if !strings.Contains(out, "1") {
+			t.Errorf("compact=%v: tile must show the digit that jumps to it:\n%s", compact, out)
+		}
+
+		tenth := renderTile(Target{Label: "app", Session: &s, Hotkey: 10}, 22, false, compact)
+		if !strings.Contains(tenth, "0") {
+			t.Errorf("compact=%v: the tenth tile is reached with 0:\n%s", compact, tenth)
+		}
+	}
+}
+
+func TestCompactTileFillsItsCell(t *testing.T) {
+	s := sess("my-app")
+	target := Target{Label: "my-app", Session: &s, Hotkey: 1}
+	for _, width := range []int{18, 20, 29} {
+		out := renderTile(target, width, false, true)
+		for i, line := range strings.Split(out, "\n") {
+			if w := lipgloss.Width(line); w != width {
+				t.Errorf("compact renderTile(width=%d) line %d is %d cells: %q", width, i, w, line)
+			}
+		}
+	}
+}
+
+func TestRenderGridCompactFitsMoreTilesInTheSameHeight(t *testing.T) {
+	targets := probeGridTargets(24)
+	full := strings.Count(RenderGrid(targets, 0, 44, 20, false), "╭")
+	compact := strings.Count(RenderGrid(targets, 0, 44, 20, true), "╭")
+
+	if compact <= full {
+		t.Errorf("compact grid drew %d tiles and the full grid %d — the point of the "+
+			"shorter tile is more of them on a phone screen", compact, full)
+	}
+}
+
+func TestRenderGridCompactStillScrollsToTheCursor(t *testing.T) {
+	var sessions []sources.TmuxSession
+	for i := 0; i < 24; i++ {
+		sessions = append(sessions, sess("s"+string(rune('a'+i))))
+	}
+	targets := BuildTargets(sessions, nil, nil, "cockpit")
+	last := len(targets) - 1
+
+	out := RenderGrid(targets, last, 44, 12, true)
+	if !strings.Contains(out, targets[last].Label) {
+		t.Errorf("selected target %q not visible in clipped compact grid:\n%s", targets[last].Label, out)
+	}
+}
+
+func TestGridViewUsesCompactTilesOnlyOnMobile(t *testing.T) {
+	phone := gridTestModel(44, 24).View()
+	if strings.Contains(phone, "main") {
+		t.Errorf("a phone-width tile drops the branch to stay one line:\n%s", phone)
+	}
+	if !strings.Contains(phone, "my-app") {
+		t.Errorf("a phone-width tile keeps the name:\n%s", phone)
+	}
+
+	desktop := gridTestModel(120, 40).View()
+	if !strings.Contains(desktop, "main") {
+		t.Errorf("desktop tiles keep their git state:\n%s", desktop)
+	}
+}
+
+func TestGridTargetsCarryHotkeys(t *testing.T) {
+	m := gridTestModel(120, 40)
+	targets := m.gridTargets()
+	if targets[0].Hotkey != 1 {
+		t.Errorf("the first running target should be reachable with 1, got %d", targets[0].Hotkey)
+	}
+	if last := targets[len(targets)-1]; last.Running() != (last.Hotkey != 0) {
+		t.Errorf("%s: hotkey %d does not match Running=%v", last.Label, last.Hotkey, last.Running())
+	}
+}
+
+func TestGridDigitKeyEntersItsTarget(t *testing.T) {
+	m := gridTestModel(44, 24) // my-app, scry running; dotfiles dormant
+	targets := m.gridTargets()
+
+	cmd := m.handleGridKey(keyMsg("2"))
+
+	if cmd == nil {
+		t.Fatal("2 should jump into the second running session")
+	}
+	if m.gridCursor != targets[1].Label {
+		t.Errorf("a digit jump moves the selection too: cursor = %q, want %q",
+			m.gridCursor, targets[1].Label)
+	}
+}
+
+func TestGridZeroKeyEntersTheTenthTarget(t *testing.T) {
+	m := gridTestModel(44, 24)
+	var sessions []sources.TmuxSession
+	for i := 0; i < 11; i++ {
+		sessions = append(sessions, sess("s"+string(rune('a'+i))))
+	}
+	m.sessions.Sessions = sessions
+	m.repos.Repos = nil
+	targets := m.gridTargets()
+
+	if cmd := m.handleGridKey(keyMsg("0")); cmd == nil {
+		t.Fatal("0 should jump into the tenth running session")
+	}
+	if m.gridCursor != targets[9].Label {
+		t.Errorf("0 landed on %q, want the tenth target %q", m.gridCursor, targets[9].Label)
+	}
+}
+
+func TestGridDigitKeyWithoutATargetIsIgnored(t *testing.T) {
+	m := gridTestModel(44, 24) // only two running sessions
+	targets := m.gridTargets()
+	m.setGridCursor(targets, 0)
+
+	if cmd := m.handleGridKey(keyMsg("9")); cmd != nil {
+		t.Error("9 with no ninth session should do nothing")
+	}
+	if m.gridCursor != targets[0].Label {
+		t.Errorf("an unbound digit must not move the cursor, got %q", m.gridCursor)
+	}
+}
+
+func TestGridDigitKeyNeverEntersADormantRepo(t *testing.T) {
+	m := gridTestModel(44, 24)
+	m.sessions.Sessions = []sources.TmuxSession{sess("my-app")}
+	targets := m.gridTargets()
+	if targets[1].Running() {
+		t.Fatalf("setup: target 1 should be the dormant repo, got %+v", targets[1])
+	}
+
+	if cmd := m.handleGridKey(keyMsg("2")); cmd != nil {
+		t.Error("2 should not reach past the only running session into a dormant repo")
+	}
+}
+
+func TestGridKeyhintsMentionTheDigits(t *testing.T) {
+	if got := GridKeyhintsView(120); !strings.Contains(got, "1-0") {
+		t.Errorf("the grid hint bar should advertise the digit jumps, got:\n%s", got)
+	}
+}
+
+// The digit column only reads as a column if every tile reserves it, including
+// the dormant tiles that never get a digit. The name is what has to line up:
+// it is the piece the digit pushes over.
+func TestTilesAlignOnTheHotkeyColumn(t *testing.T) {
+	s := sess("app")
+	dormantRepo := repo("app")
+
+	for _, compact := range []bool{true, false} {
+		keyed := nameColumn(t, renderTile(Target{Label: "app", Session: &s, Hotkey: 1}, 22, false, compact))
+		bare := nameColumn(t, renderTile(Target{Label: "app", Repo: &dormantRepo}, 22, false, compact))
+		if keyed != bare {
+			t.Errorf("compact=%v: name sits at column %d with a hotkey and %d without",
+				compact, keyed, bare)
+		}
+	}
+}
+
+// nameColumn returns the cell the target's name starts in, measuring styled
+// text so ANSI escapes do not count toward the column.
+func nameColumn(t *testing.T, tile string) int {
+	t.Helper()
+	for _, line := range strings.Split(tile, "\n") {
+		if i := strings.Index(line, "app"); i >= 0 {
+			return lipgloss.Width(line[:i])
+		}
+	}
+	t.Fatalf("no name in tile:\n%s", tile)
+	return -1
 }

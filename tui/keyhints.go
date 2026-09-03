@@ -70,6 +70,9 @@ func KeyhintsView(mode Mode, focused PanelID, width int) string {
 func GridKeyhintsView(width int) string {
 	hints := []struct{ key, desc string }{
 		{"hjkl", "nav"},
+		// Second, so the digits survive truncation on the phone widths they
+		// were added for.
+		{"1-0", "open"},
 		{"Enter", "jump"},
 		{"n", "new"},
 		{"s", "save"},
