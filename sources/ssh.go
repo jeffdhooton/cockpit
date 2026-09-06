@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // ErrHostUnreachable means ssh itself failed: no route, refused key, timeout,
@@ -139,6 +139,14 @@ func classifySSHError(err error, stderr []byte) error {
 			return fmt.Errorf("%w: %s", ErrHostUnreachable, msg)
 		}
 		if msg != "" {
+			// The remote command's own message. tmux's verified absences
+			// keep their meaning across the wire.
+			switch {
+			case noServerMessage(msg):
+				return fmt.Errorf("%s: %w", msg, ErrNoServer)
+			case noSessionMessage(msg):
+				return fmt.Errorf("%s: %w", msg, ErrNoSession)
+			}
 			return errors.New(msg)
 		}
 		return err

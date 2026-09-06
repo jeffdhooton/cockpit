@@ -2,10 +2,9 @@ package sources
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // defaultStaleThreshold is used when the configured threshold will not parse.
@@ -24,7 +23,9 @@ const (
 	SignalStaleSession SignalKind = "stale_session"
 )
 
-// Signal is one thing worth looking at.
+// Signal is one thing worth looking at. It is the legacy envelope the
+// cockpit_signals tool has always returned; the same facts drive the
+// attention queue, and this is an adaptation of them, not a second reading.
 type Signal struct {
 	Kind    SignalKind `json:"kind"`
 	Subject string     `json:"subject"`
@@ -36,6 +37,7 @@ type Signal struct {
 type SignalInput struct {
 	Config    config.SignalsConfig
 	Sessions  []TmuxSession
+	Panes     []PaneReport
 	Git       []GitRepoStatus
 	GitHub    *GitHubStatus
 	Processes map[string][]ProcessInfo
@@ -47,133 +49,94 @@ type SignalInput struct {
 // an agent waiting on you beats a dead process, which beats failing continuous
 // integration, which beats unpushed work, which beats a session you left open.
 func ComputeSignals(in SignalInput) []Signal {
-	var signals []Signal
-	signals = append(signals, blockedAgentSignals(in)...)
-	signals = append(signals, hermesDownSignals(in)...)
-	signals = append(signals, deadProcessSignals(in)...)
-	signals = append(signals, failingCISignals(in)...)
-	signals = append(signals, unpushedSignals(in)...)
-	signals = append(signals, staleSessionSignals(in)...)
-	return signals
+	return SignalsFromAttention(DeriveAttention(in.attentionInput()))
 }
 
-func deadProcessSignals(in SignalInput) []Signal {
-	// Sorted, because ranging a map would reorder the panel on every refresh.
-	labels := make([]string, 0, len(in.Processes))
-	for label := range in.Processes {
-		labels = append(labels, label)
+// attentionInput lifts the flat legacy input into the host-scoped one the
+// queue derives from. Everything here is one fresh local observation.
+func (in SignalInput) attentionInput() AttentionInput {
+	host := HostReport{Outcome: ObservationFresh, ObservedAt: in.Now, Sessions: in.Sessions, Panes: in.Panes, Git: in.Git}
+	if len(in.Processes) > 0 {
+		host.Processes = map[string]ProcessObservation{}
+		for label, infos := range in.Processes {
+			host.Processes[label] = ProcessObservation{Project: label, Session: label, SessionExists: true, Processes: describeAll(infos), ObservedAt: in.Now}
+		}
 	}
-	sort.Strings(labels)
+	return AttentionInput{
+		Config:   in.Config,
+		Hosts:    []HostReport{host},
+		GitHub:   in.GitHub,
+		GitHubAt: in.Now,
+		Hermes:   in.Hermes,
+		HermesAt: in.Now,
+		Now:      in.Now,
+	}
+}
 
+// describeAll fills Outcome for legacy ProcessInfo values that only carry
+// State, so older callers and fixtures derive the same items.
+func describeAll(infos []ProcessInfo) []ProcessInfo {
+	out := make([]ProcessInfo, len(infos))
+	for i, p := range infos {
+		if p.Outcome == "" {
+			switch p.State {
+			case ProcessRunning:
+				p.Outcome = OutcomeRunning
+			case ProcessDead:
+				if p.ExitCode != nil && *p.ExitCode == 0 {
+					p.Outcome = OutcomeCompleted
+				} else {
+					p.Outcome = OutcomeExited
+				}
+			default:
+				p.Outcome = OutcomeNotStarted
+			}
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// SignalsFromAttention adapts a derived report to the legacy envelope: the
+// same items, in the legacy kind order, with the legacy subject shapes.
+// Stale items are included, as they always were: a signal is what was last
+// seen, and the queue carries the freshness that this envelope cannot.
+func SignalsFromAttention(rep AttentionReport) []Signal {
+	order := []AttentionKind{AttentionNeedsInput, AttentionHermesDown, AttentionProcessExited, AttentionCIFailed, AttentionUnpushed, AttentionStaleSession}
 	var out []Signal
-	for _, label := range labels {
-		for _, p := range in.Processes[label] {
-			if !p.Configured || p.State != ProcessDead {
+	for _, kind := range order {
+		for _, item := range rep.Items {
+			if item.Kind != kind {
 				continue
 			}
-			out = append(out, Signal{
-				Kind:    SignalDeadProcess,
-				Subject: label + "/" + p.Name,
-				Detail:  "process exited",
-			})
+			out = append(out, signalFor(item))
 		}
 	}
 	return out
 }
 
-func failingCISignals(in SignalInput) []Signal {
-	if !in.Config.ShowFailingCI || in.GitHub == nil {
-		return nil
+func signalFor(item AttentionItem) Signal {
+	switch item.Kind {
+	case AttentionNeedsInput:
+		return Signal{Kind: SignalBlockedAgent, Subject: projectKey(item.Host, item.Target.Session), Detail: "waiting on you"}
+	case AttentionHermesDown:
+		return Signal{Kind: SignalHermesDown, Subject: item.Target.Label, Detail: "gateway " + trimPrefixFold(item.Detail, "Gateway ")}
+	case AttentionProcessExited:
+		return Signal{Kind: SignalDeadProcess, Subject: item.Project + "/" + item.Target.Process, Detail: "process exited"}
+	case AttentionCIFailed:
+		return Signal{Kind: SignalFailingCI, Subject: item.Project, Detail: "checks failing on " + item.Target.Branch}
+	case AttentionUnpushed:
+		return Signal{Kind: SignalUnpushed, Subject: item.Project, Detail: item.Detail}
+	default:
+		return Signal{Kind: SignalStaleSession, Subject: projectKey(item.Host, item.Target.Session), Detail: item.Detail}
 	}
-	var out []Signal
-	for _, check := range in.GitHub.RepoChecks {
-		if check.CIStatus != "failing" {
-			continue
-		}
-		out = append(out, Signal{
-			Kind:    SignalFailingCI,
-			Subject: check.RepoLabel,
-			Detail:  "checks failing",
-		})
-	}
-	return out
 }
 
-func unpushedSignals(in SignalInput) []Signal {
-	if !in.Config.ShowUnpushed {
-		return nil
+func trimPrefixFold(s, prefix string) string {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):]
 	}
-	var out []Signal
-	for _, repo := range in.Git {
-		// A repo we could not read is not a repo with unpushed work.
-		if repo.Error != nil || repo.Unpushed == 0 {
-			continue
-		}
-		out = append(out, Signal{
-			Kind:    SignalUnpushed,
-			Subject: repo.Label,
-			Detail:  fmt.Sprintf("%d unpushed %s", repo.Unpushed, plural(repo.Unpushed, "commit")),
-		})
-	}
-	return out
-}
-
-// blockedAgentSignals is the one signal you can act on immediately. It clears
-// the moment you answer, so it churns more than the others; that is the
-// accepted price for never missing an agent that is waiting.
-func blockedAgentSignals(in SignalInput) []Signal {
-	var out []Signal
-	for _, s := range in.Sessions {
-		// Only a reported status counts. The pane-hash guess cannot see this
-		// state at all, so an inferred needs_input would be a contradiction.
-		if !s.StatusReported || s.Status != AgentStatusNeedsInput {
-			continue
-		}
-		out = append(out, Signal{
-			Kind:    SignalBlockedAgent,
-			Subject: s.Name,
-			Detail:  "waiting on you",
-		})
-	}
-	return out
-}
-
-// hermesDownSignals fires for a gateway that answered and said it is not
-// running. An unreachable dashboard is not a Hermes problem — the tailnet
-// being down is — and its tile already says unreachable.
-func hermesDownSignals(in SignalInput) []Signal {
-	var out []Signal
-	for _, h := range in.Hermes {
-		if !h.Reachable || h.Gateway == "running" {
-			continue
-		}
-		out = append(out, Signal{Kind: SignalHermesDown, Subject: h.Label, Detail: "gateway " + h.Gateway})
-	}
-	return out
-}
-
-func staleSessionSignals(in SignalInput) []Signal {
-	if !in.Config.ShowStaleSessions {
-		return nil
-	}
-	threshold, err := time.ParseDuration(in.Config.StaleSessionThreshold)
-	if err != nil || threshold <= 0 {
-		threshold = defaultStaleThreshold
-	}
-
-	var out []Signal
-	for _, s := range in.Sessions {
-		// A session you are looking at right now is not stale.
-		if s.Attached || in.Now.Sub(s.LastUsed) < threshold {
-			continue
-		}
-		out = append(out, Signal{
-			Kind:    SignalStaleSession,
-			Subject: s.Name,
-			Detail:  fmt.Sprintf("idle %s", formatAge(in.Now.Sub(s.LastUsed))),
-		})
-	}
-	return out
+	return s
 }
 
 // plural returns the noun in the form matching n.

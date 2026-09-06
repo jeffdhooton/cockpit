@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 func TestPidFileRoundTrip(t *testing.T) {
@@ -128,8 +128,8 @@ func TestServeAnswersToolsList(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&decoded); err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.Result.Tools) != 14 {
-		t.Errorf("want 14 tools over the wire, got %d", len(decoded.Result.Tools))
+	if len(decoded.Result.Tools) != 16 {
+		t.Errorf("want 16 tools over the wire, got %d", len(decoded.Result.Tools))
 	}
 }
 

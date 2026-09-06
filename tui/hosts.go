@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 // hostPoll is one pass over a remote host: its sessions, git statuses, and
@@ -19,6 +21,9 @@ type hostPoll struct {
 	Repos     []sources.GitRepoStatus
 	Processes map[string][]sources.ProcessInfo // repo key → processes
 	Err       error
+	// Report is the full observation the attention queue derives from,
+	// including pane records and per-project read failures.
+	Report sources.HostReport
 }
 
 type hostDataMsg struct{ hostPoll }
@@ -70,6 +75,7 @@ func (m Model) fetchHost(h config.HostConfig) tea.Cmd {
 			repos = append(repos, r)
 		}
 	}
+	clock := m.now
 	return func() tea.Msg {
 		ctx := context.Background()
 		r := sources.SSHRunner{Host: h.Name, Tmux: h.Tmux}
@@ -78,24 +84,28 @@ func (m Model) fetchHost(h config.HostConfig) tea.Cmd {
 		if err != nil {
 			return hostDataMsg{hostPoll{Host: h.Name, Err: err}}
 		}
-		sessions, err := sources.ListSessionsOn(ctx, r, h.Name, now)
-		if err != nil {
-			return hostDataMsg{hostPoll{Host: h.Name, Err: err}}
+		rep := sources.ObserveHostReport(ctx, r, r, h.Name, repos, now, clock())
+		if rep.Outcome != sources.ObservationFresh {
+			err := fmt.Errorf("%s", rep.Err)
+			if sources.IsNoServer(err) || rep.Err == "" {
+				err = nil
+			} else if strings.Contains(rep.Err, sources.ErrHostUnreachable.Error()) {
+				err = fmt.Errorf("%w: %s", sources.ErrHostUnreachable, rep.Err)
+			}
+			if err != nil {
+				return hostDataMsg{hostPoll{Host: h.Name, Err: err, Report: rep}}
+			}
 		}
 
 		poll := hostPoll{
 			Host:      h.Name,
-			Sessions:  sessions,
-			Repos:     sources.GetGitStatus(ctx, r, repos),
+			Sessions:  rep.Sessions,
+			Repos:     rep.Git,
 			Processes: map[string][]sources.ProcessInfo{},
+			Report:    rep,
 		}
-		for _, repo := range repos {
-			if len(repo.Processes) == 0 {
-				continue
-			}
-			if infos, err := sources.InspectProcesses(ctx, r, repo); err == nil {
-				poll.Processes[repo.Key()] = infos
-			}
+		for key, obs := range rep.Processes {
+			poll.Processes[key] = obs.Processes
 		}
 		return hostDataMsg{poll}
 	}
@@ -112,35 +122,25 @@ func (m Model) hostTick(h config.HostConfig) tea.Cmd {
 
 type hostTickMsg struct{ Host string }
 
-// remoteSessions, remoteRepos, and remoteProcesses flatten every host's
-// last-known data for the grid.
-func (m Model) remoteSessions() []sources.TmuxSession {
-	var out []sources.TmuxSession
-	for _, h := range m.config.Hosts {
-		out = append(out, m.hosts[h.Name].poll.Sessions...)
+// reposOn is one host's last-known git state, for that host's own grid.
+func (m Model) reposOn(host string) []sources.GitRepoStatus {
+	if st, polled := m.hosts[host]; polled && len(st.poll.Repos) > 0 {
+		return st.poll.Repos
 	}
-	return out
-}
-
-func (m Model) remoteRepos() []sources.GitRepoStatus {
+	// Not polled yet, or the first poll failed: still show the configured
+	// repos as dormant tiles rather than nothing.
 	var out []sources.GitRepoStatus
-	for _, h := range m.config.Hosts {
-		st, polled := m.hosts[h.Name]
-		if polled && len(st.poll.Repos) > 0 {
-			out = append(out, st.poll.Repos...)
-			continue
-		}
-		// Not polled yet, or the first poll failed: still show the configured
-		// repos as dormant tiles rather than nothing.
-		for _, r := range m.config.Repos {
-			if r.Host == h.Name {
-				out = append(out, sources.GitRepoStatus{Label: r.Label, Host: r.Host, Path: r.Path})
-			}
+	for _, r := range m.config.Repos {
+		if r.Host == host {
+			out = append(out, sources.GitRepoStatus{Label: r.Label, Host: r.Host, Path: r.Path})
 		}
 	}
 	return out
 }
 
+// remoteProcesses flattens every host's last-known process state. It stays
+// whole-fleet because AttachProcesses matches on key: entries for a host the
+// grid is not showing simply find no tile.
 func (m Model) remoteProcesses() map[string][]sources.ProcessInfo {
 	out := map[string][]sources.ProcessInfo{}
 	for _, st := range m.hosts {

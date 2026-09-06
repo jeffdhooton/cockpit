@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 func sess(name string) sources.TmuxSession {
@@ -108,11 +108,11 @@ func TestBuildTargetsEmpty(t *testing.T) {
 // GridCols measures against the grid's content width, not the terminal width.
 func TestGridCols(t *testing.T) {
 	cases := []struct{ contentWidth, want int }{
-		{20, 1},  // 24-col terminal, the narrow floor
-		{40, 2},  // 44-col terminal, Termius vertical
-		{66, 3},  // 70-col terminal
-		{116, 5}, // 120-col terminal
-		{196, 7}, // 200-col terminal
+		{20, 1},   // 24-col terminal, the narrow floor
+		{40, 2},   // 44-col terminal, Termius vertical
+		{66, 3},   // 70-col terminal
+		{116, 5},  // 120-col terminal
+		{196, 7},  // 200-col terminal
 		{336, 12}, // 340-col ultrawide: columns grow instead of tiles stretching
 	}
 	for _, c := range cases {
@@ -348,7 +348,7 @@ func gridTestModel(width, height int) Model {
 	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = width
 	m.height = height
-	m.layout = CalculateLayout(width, height, 0)
+	m.view = ViewGrid
 	m.sessions.Loading = false
 	m.sessions.Sessions = []sources.TmuxSession{sess("my-app"), sess("scry")}
 	m.repos.Loading = false
@@ -364,11 +364,11 @@ func TestDefaultViewIsGrid(t *testing.T) {
 	}
 }
 
-func TestDashboardViewHonoursConfig(t *testing.T) {
+func TestSessionsViewIsTheDefault(t *testing.T) {
 	cfg := testConfig()
-	cfg.General.DefaultView = "dashboard"
-	if m := NewModel(cfg, "/tmp/config.toml"); m.view != ViewDashboard {
-		t.Errorf("view = %v, want ViewDashboard", m.view)
+	cfg.General.DefaultView = "sessions"
+	if m := NewModel(cfg, "/tmp/config.toml"); m.view != ViewSessions {
+		t.Errorf("view = %v, want ViewSessions", m.view)
 	}
 }
 
@@ -450,8 +450,8 @@ func TestGridCursorKeepsSessionsCursorAligned(t *testing.T) {
 	m.handleGridKey(keyMsg("l")) // move to the second running target
 	targets := m.gridTargets()
 	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
-	if got := m.selectedSessionName(); got != targets[idx].Label {
-		t.Errorf("sessions cursor out of sync: selectedSessionName = %q, grid cursor = %q",
+	if got := m.sessions.Sessions[m.sessions.Cursor].Name; got != targets[idx].Label {
+		t.Errorf("sessions cursor out of sync: sessions cursor = %q, grid cursor = %q",
 			got, targets[idx].Label)
 	}
 }
@@ -486,12 +486,12 @@ func TestGridEnterOnEmptyGridIsSafe(t *testing.T) {
 func TestGridDashboardToggle(t *testing.T) {
 	m := gridTestModel(120, 40)
 	m.handleGridKey(keyMsg("d"))
-	if m.view != ViewDashboard {
-		t.Errorf("d in grid view should switch to dashboard, view = %v", m.view)
+	if m.view != ViewSessions {
+		t.Errorf("d in grid view should switch to the session view, view = %v", m.view)
 	}
-	m.handleNavKey(keyMsg("d"))
+	m.handleNavKey(keyMsg("g"))
 	if m.view != ViewGrid {
-		t.Errorf("d in dashboard view should switch back to grid, view = %v", m.view)
+		t.Errorf("g in the session view should switch back to grid, view = %v", m.view)
 	}
 }
 
@@ -801,25 +801,8 @@ func TestBuildTargetsDoesNotFoldLocalSessionIntoHostlessHermes(t *testing.T) {
 	}
 }
 
-func TestGridEnterOnHermesTileWithHostOpensShell(t *testing.T) {
-	m := gridTestModel(120, 40)
-	m.config.Hosts = []config.HostConfig{{Name: "mini", Tmux: "/opt/homebrew/bin/tmux"}}
-	m.config.Hermes = []config.HermesConfig{{Label: "hermes", URL: "http://x:1", Host: "mini"}}
-
-	targets := m.gridTargets()
-	idx := -1
-	for i, tg := range targets {
-		if tg.Hermes != nil {
-			idx = i
-		}
-	}
-	if idx < 0 {
-		t.Fatal("setup: no hermes tile")
-	}
-	if cmd := m.enterTarget(targets, idx); cmd == nil {
-		t.Error("Enter on a hermes tile with a host should return a jump cmd")
-	}
-}
+// A hermes tile bound to a host now lives inside that host's box, so the
+// shell it opens is covered by TestEnterOnHermesInsideItsHostStillOpensAShell.
 
 func TestGridEnterOnHermesTileWithoutHostDoesNothing(t *testing.T) {
 	m := gridTestModel(120, 40)
@@ -1132,7 +1115,7 @@ func TestGridDigitKeyNeverEntersADormantRepo(t *testing.T) {
 }
 
 func TestGridKeyhintsMentionTheDigits(t *testing.T) {
-	if got := GridKeyhintsView(120); !strings.Contains(got, "1-0") {
+	if got := GridKeyhintsView(120, false, "Attention 0"); !strings.Contains(got, "1-0") {
 		t.Errorf("the grid hint bar should advertise the digit jumps, got:\n%s", got)
 	}
 }
@@ -1165,4 +1148,332 @@ func nameColumn(t *testing.T, tile string) int {
 	}
 	t.Fatalf("no name in tile:\n%s", tile)
 	return -1
+}
+
+// --- host boxes -------------------------------------------------------------
+
+// hostBoxTestModel is a model with one remote machine carrying two sessions, a
+// dormant repo and a hermes gateway, beside the local targets gridTestModel
+// sets up. It is the shape the drill-down was built for.
+func hostBoxTestModel(width, height int) Model {
+	m := gridTestModel(width, height)
+	m.config.Hosts = []config.HostConfig{{Name: "mini", Tmux: "/opt/homebrew/bin/tmux"}}
+	m.config.Hermes = []config.HermesConfig{{Label: "hermes", URL: "http://x:1", Host: "mini"}}
+	m.hosts = map[string]hostState{"mini": {poll: hostPoll{
+		Host:     "mini",
+		Sessions: []sources.TmuxSession{{Name: "docket", Host: "mini"}},
+		Repos:    []sources.GitRepoStatus{{Label: "site", Host: "mini", Branch: "main"}},
+	}}}
+	return m
+}
+
+func hostBoxIndex(targets []Target, name string) int {
+	for i := range targets {
+		if targets[i].HostBox && targets[i].Label == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestRootCollapsesEveryHostIntoOneBox(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	got := labels(m.gridTargets())
+	for _, tg := range m.gridTargets() {
+		if tg.Host != "" && !tg.HostBox {
+			t.Errorf("root should hold no per-host tile, got %q among %v", tg.Key(), got)
+		}
+	}
+	if hostBoxIndex(m.gridTargets(), "mini") < 0 {
+		t.Errorf("root should hold a box for host mini, got %v", got)
+	}
+}
+
+func TestRootNestsAHostBoundHermesUnderItsBox(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	for _, tg := range m.gridTargets() {
+		if tg.Hermes != nil {
+			t.Errorf("a hermes tile bound to a host belongs inside its box, not at the root")
+		}
+	}
+}
+
+func TestRootKeepsAHostlessHermesAtTheTop(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	m.config.Hermes = []config.HermesConfig{{Label: "hermes", URL: "http://x:1"}}
+	for _, tg := range m.gridTargets() {
+		if tg.Hermes != nil {
+			return
+		}
+	}
+	t.Error("a hermes tile with no host has no box to nest in and must stay at the root")
+}
+
+func TestEnteringAHostBoxShowsThatHostsTargets(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	idx := hostBoxIndex(targets, "mini")
+	if idx < 0 {
+		t.Fatal("setup: no host box")
+	}
+	m.enterTarget(targets, idx)
+
+	if m.gridHost != "mini" {
+		t.Fatalf("Enter on a host box should open that host, gridHost = %q", m.gridHost)
+	}
+	var keys []string
+	for _, tg := range m.gridTargets() {
+		keys = append(keys, tg.Key())
+		if tg.HostBox {
+			t.Error("a host's own grid should not hold boxes")
+		}
+		if tg.Host != "mini" {
+			t.Errorf("mini's grid should hold only mini's targets, got %q", tg.Key())
+		}
+	}
+	eq(t, keys, []string{"mini/docket", "hermes", "mini/site"})
+}
+
+func TestEnteringAHostBoxReturnsNoJumpCommand(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	idx := hostBoxIndex(targets, "mini")
+	if cmd := m.enterTarget(targets, idx); cmd != nil {
+		t.Error("opening a host box navigates the grid; it must not switch tmux")
+	}
+}
+
+func TestBackspaceReturnsToTheRootOnTheBoxYouCameFrom(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+
+	m.handleGridKey(keyMsg("backspace"))
+	if m.gridHost != "" {
+		t.Fatalf("backspace should return to the root, gridHost = %q", m.gridHost)
+	}
+	root := m.gridTargets()
+	idx := resolveGridCursor(root, m.gridCursor, m.gridIndex)
+	if !root[idx].HostBox || root[idx].Label != "mini" {
+		t.Errorf("backspace should land on the box you came from, landed on %q", root[idx].Key())
+	}
+}
+
+func TestBackspaceAtTheRootStaysPut(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	before := m.gridCursor
+	m.handleGridKey(keyMsg("backspace"))
+	if m.gridHost != "" || m.gridCursor != before {
+		t.Errorf("backspace at the root should do nothing, gridHost = %q cursor = %q",
+			m.gridHost, m.gridCursor)
+	}
+}
+
+func TestHostBoxCarriesNoHotkeyButItsChildrenDo(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	idx := hostBoxIndex(targets, "mini")
+	if targets[idx].Hotkey != 0 {
+		t.Errorf("a box is not a session, so no digit jumps to it, got %d", targets[idx].Hotkey)
+	}
+
+	m.enterTarget(targets, idx)
+	var running Target
+	for _, tg := range m.gridTargets() {
+		if tg.Key() == "mini/docket" {
+			running = tg
+		}
+	}
+	if running.Hotkey != 1 {
+		t.Errorf("digits renumber inside a host, want mini/docket on 1, got %d", running.Hotkey)
+	}
+}
+
+func TestHostBoxTileNamesTheMachineAndItsReachability(t *testing.T) {
+	up := renderTile(Target{Label: "mini", Host: "mini", HostBox: true, Polled: true}, 20, false, false)
+	if !strings.Contains(up, "mini") || !strings.Contains(up, "reachable") {
+		t.Errorf("a reached box should name the machine and say it is up, got:\n%s", up)
+	}
+	down := renderTile(
+		Target{Label: "mini", Host: "mini", HostBox: true, Polled: true, Unreachable: true},
+		20, false, false)
+	if !strings.Contains(down, "unreachable") {
+		t.Errorf("a box for a dead link must say so, got:\n%s", down)
+	}
+	if strings.Contains(up, "unreachable") {
+		t.Errorf("a reached box must not read as unreachable, got:\n%s", up)
+	}
+}
+
+func TestHostBoxSaysNothingAboutAMachineItHasNotReached(t *testing.T) {
+	out := renderTile(Target{Label: "mini", Host: "mini", HostBox: true}, 20, false, false)
+	if strings.Contains(out, "reachable") {
+		t.Errorf("before the first poll a box cannot claim the machine is up or down, got:\n%s", out)
+	}
+}
+
+func TestHostBoxIsMarkedPolledOnceTheHostHasAnswered(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	if idx := hostBoxIndex(targets, "mini"); !targets[idx].Polled {
+		t.Error("a host with poll data behind it should render as reached")
+	}
+
+	m.hosts = nil
+	targets = m.gridTargets()
+	if idx := hostBoxIndex(targets, "mini"); targets[idx].Polled {
+		t.Error("a host that has never answered must not render as reached")
+	}
+}
+
+func TestGridPanelNamesTheHostYouAreInside(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	if out := m.View(); !strings.Contains(out, "COCKPIT") {
+		t.Errorf("the root panel is titled Cockpit, got:\n%s", out)
+	}
+	targets := m.gridTargets()
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+	out := m.View()
+	if strings.Contains(out, "COCKPIT") {
+		t.Errorf("inside a host the panel should name the host, not the root, got:\n%s", out)
+	}
+	if !strings.Contains(out, "MINI") {
+		t.Errorf("inside mini the panel should be titled mini, got:\n%s", out)
+	}
+}
+
+func TestPreviewIsBlankForASelectionThisMachineCannotCapture(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	m.sessionPreview = "stale local pane"
+
+	targets := m.gridTargets()
+	m.setGridCursor(targets, hostBoxIndex(targets, "mini"))
+	if got := m.gridLocalSession(); got != "" {
+		t.Errorf("a host box has no pane to capture, got %q", got)
+	}
+
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+	m.setGridCursor(m.gridTargets(), 0)
+	if got := m.gridLocalSession(); got != "" {
+		t.Errorf("capture-pane runs locally, so a remote tile previews nothing, got %q", got)
+	}
+	if out := m.renderPreviewPanel(10); strings.Contains(out, "stale local pane") {
+		t.Errorf("a remote selection must not show the last local pane, got:\n%s", out)
+	}
+}
+
+func TestPreviewStillFollowsALocalSelection(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	m.setGridCursor(targets, 0)
+	if got := m.gridLocalSession(); got != targets[0].Label {
+		t.Errorf("a local running tile should still preview, got %q want %q", got, targets[0].Label)
+	}
+}
+
+func TestGridKeyhintsOfferBackOnlyInsideAHost(t *testing.T) {
+	if got := GridKeyhintsView(120, false, "Attention 0"); strings.Contains(got, "back") {
+		t.Errorf("there is nowhere to go back to from the root, got:\n%s", got)
+	}
+	if got := GridKeyhintsView(120, true, "Attention 0"); !strings.Contains(got, "back") {
+		t.Errorf("inside a host the hint bar should advertise backspace, got:\n%s", got)
+	}
+}
+
+func TestEnterOnHermesInsideItsHostStillOpensAShell(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+
+	targets = m.gridTargets()
+	for i, tg := range targets {
+		if tg.Hermes == nil {
+			continue
+		}
+		if cmd := m.enterTarget(targets, i); cmd == nil {
+			t.Error("Enter on a nested hermes tile should still return a jump cmd")
+		}
+		return
+	}
+	t.Fatal("mini's grid should hold its hermes tile")
+}
+
+func TestLeavingAHostThatVanishedFromConfigIsSafe(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+
+	m.config.Hosts = nil
+	m.config.Hermes = nil
+	if got := m.gridTargets(); len(got) != 0 {
+		t.Errorf("a host dropped from config has no targets, got %v", labels(got))
+	}
+	m.handleGridKey(keyMsg("backspace"))
+	if m.gridHost != "" {
+		t.Errorf("backspace should still reach the root, gridHost = %q", m.gridHost)
+	}
+	if idx := resolveGridCursor(m.gridTargets(), m.gridCursor, m.gridIndex); idx < 0 {
+		t.Error("the root cursor should resolve after the host it named disappeared")
+	}
+}
+
+func TestSaveIsRefusedForASessionThisMachineDoesNotOwn(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+
+	targets = m.gridTargets()
+	m.setGridCursor(targets, 0)
+	if !targets[0].Running() {
+		t.Fatalf("setup: target 0 should be a running remote session, got %+v", targets[0])
+	}
+	if cmd := m.handleGridKey(keyMsg("s")); cmd != nil {
+		t.Error("s saves a local session read from local tmux; a remote tile has none to save")
+	}
+}
+
+func TestSaveNamesTheSessionUnderTheCursor(t *testing.T) {
+	m := gridTestModel(120, 40)
+	targets := m.gridTargets()
+	// scry sorts second among the running targets but is first in the
+	// sessions list, so a save that reads the sessions cursor instead of the
+	// selection saves the wrong session.
+	m.sessions.Sessions = []sources.TmuxSession{sess("scry"), sess("my-app")}
+	m.setGridCursor(targets, 1)
+	if got := m.gridLocalSession(); got != "scry" {
+		t.Errorf("the selected local session should be scry, not whatever the "+
+			"sessions list happens to hold at the same index, got %q", got)
+	}
+}
+
+func TestTilesInsideAHostDropTheHostPrefix(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	targets := m.gridTargets()
+	m.enterTarget(targets, hostBoxIndex(targets, "mini"))
+
+	for _, tg := range m.gridTargets() {
+		if strings.Contains(tg.Name(), "/") {
+			t.Errorf("mini's own grid already says mini in its title, so %q should "+
+				"show as %q", tg.Name(), tg.Label)
+		}
+	}
+}
+
+func TestTilesAtTheRootKeepTheirHostPrefix(t *testing.T) {
+	m := hostBoxTestModel(120, 40)
+	m.gridHost = "mini"
+	nested := m.gridTargets()
+	m.gridHost = ""
+
+	// The same target, seen from the root, must still name its machine: two
+	// hosts can each have a docket and the tiles must not read alike.
+	for _, tg := range nested {
+		if tg.HostBox || tg.Hermes != nil {
+			continue
+		}
+		root := Target{Label: tg.Label, Host: tg.Host}
+		if root.Name() != "mini/"+tg.Label {
+			t.Errorf("at the root a remote tile names its host, got %q", root.Name())
+		}
+	}
 }

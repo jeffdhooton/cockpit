@@ -2,16 +2,19 @@ package sources
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // requireTmux skips when there is no tmux to drive. These tests talk to a real
 // server, because the argv-level tests cannot catch things like base-index
-// making window 0 nonexistent.
+// making window 0 nonexistent. The server is a private one (-L), started for
+// the test and killed after it, so the user's own sessions are never touched.
 func requireTmux(t *testing.T) Runner {
 	t.Helper()
 	if testing.Short() {
@@ -20,7 +23,18 @@ func requireTmux(t *testing.T) Runner {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not installed")
 	}
-	return ExecRunner{Timeout: 10 * time.Second}
+	return privateServer(t)
+}
+
+// privateServer returns a runner on a test-owned tmux server, killed on
+// cleanup.
+func privateServer(t *testing.T) ExecRunner {
+	t.Helper()
+	r := ExecRunner{Timeout: 10 * time.Second, NoConfig: true, Socket: "cockpit-test-" + sanitizeTestLabel(t.Name()) + "-" + strconv.Itoa(os.Getpid())}
+	t.Cleanup(func() {
+		_, _ = r.Run(context.Background(), "kill-server")
+	})
+	return r
 }
 
 // scratchRepo builds a throwaway session name and guarantees teardown.

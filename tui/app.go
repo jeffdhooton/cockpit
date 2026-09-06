@@ -14,23 +14,12 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/process"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 var validLabel = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
-// PanelID identifies a panel.
-type PanelID int
-
-const (
-	PanelSessions PanelID = iota
-	PanelRepos
-	PanelToday
-	PanelInbox
-	PanelViz
-	panelCount // sentinel
-)
 
 // Mode represents the TUI interaction mode.
 type Mode int
@@ -40,130 +29,20 @@ const (
 	ModeCapture
 	ModeNewSession
 	ModeSearch
-	ModeVizPicker
+	ModeAttentionFilter // typing into the attention queue's filter
+	ModeConfirm         // a process action awaits confirmation
+	ModeSessionsFilter  // typing into the session view's filter
 )
 
 // ViewMode selects the top-level layout.
 type ViewMode int
 
 const (
-	ViewGrid      ViewMode = iota // unified sessions + repos grid (default)
-	ViewDashboard                 // the five-panel dashboard
+	ViewGrid      ViewMode = iota // unified sessions + repos tile wall
+	ViewSessions                  // sessions left, selected session's panes right (default)
+	ViewAttention                 // the attention queue
+	ViewProcesses                 // one project's process panel
 )
-
-// Layout holds calculated panel dimensions.
-type Layout struct {
-	SessionsH    int // cards + preview
-	MiddleH      int // repos | today row height
-	BottomH      int // inbox | signals row height
-	KeyhintsH    int
-	LeftW        int // repos width
-	RightW       int // today width
-	BottomLeftW  int // notes width (2/3)
-	BottomRightW int // signals width (1/3)
-}
-
-// CalculateLayout computes panel sizes based on terminal dimensions.
-// It guarantees that SessionsH + MiddleH + BottomH + KeyhintsH == height.
-func CalculateLayout(width, height, repoCount int) Layout {
-	l := Layout{KeyhintsH: 1}
-
-	usable := height - l.KeyhintsH
-	if usable < 15 {
-		// Absolute minimum: give each section something
-		l.SessionsH = 5
-		l.MiddleH = 5
-		l.BottomH = usable - 10
-		if l.BottomH < 3 {
-			l.BottomH = 3
-		}
-		l.LeftW = width / 2
-		l.RightW = width - l.LeftW
-		l.BottomLeftW = width * 2 / 3
-		l.BottomRightW = width - l.BottomLeftW
-		return l
-	}
-
-	// Minimums — below these a panel is unusable
-	const minSessions = 8
-	const minMiddle = 6
-	const minBottom = 5
-	const minTotal = minSessions + minMiddle + minBottom
-
-	// Desired ratios vary with terminal height
-	sessionsPct := 45
-	middlePct := 30
-	bottomPct := 25
-	switch {
-	case height < 45:
-		sessionsPct = 30
-		middlePct = 38
-		bottomPct = 32
-	case height < 55:
-		sessionsPct = 35
-		middlePct = 35
-		bottomPct = 30
-	case height < 65:
-		sessionsPct = 38
-		middlePct = 33
-		bottomPct = 29
-	}
-	_ = bottomPct // ratios are applied below
-
-	if usable <= minTotal {
-		// Not enough room for ratios — just use minimums
-		l.SessionsH = minSessions
-		l.MiddleH = minMiddle
-		l.BottomH = usable - minSessions - minMiddle
-		if l.BottomH < 3 {
-			l.BottomH = 3
-		}
-	} else {
-		// Apply ratios — bottom uses explicit pct, remainder goes to sessions
-		l.SessionsH = usable * sessionsPct / 100
-		l.MiddleH = usable * middlePct / 100
-		l.BottomH = usable * bottomPct / 100
-
-		// Enforce minimums, then redistribute excess back
-		if l.SessionsH < minSessions {
-			l.SessionsH = minSessions
-		}
-		if l.MiddleH < minMiddle {
-			l.MiddleH = minMiddle
-		}
-		if l.BottomH < minBottom {
-			l.BottomH = minBottom
-		}
-
-		// If minimums pushed us over budget, shrink largest section first
-		for l.SessionsH+l.MiddleH+l.BottomH > usable {
-			if l.SessionsH > minSessions && l.SessionsH >= l.MiddleH && l.SessionsH >= l.BottomH {
-				l.SessionsH--
-			} else if l.MiddleH > minMiddle && l.MiddleH >= l.BottomH {
-				l.MiddleH--
-			} else if l.BottomH > minBottom {
-				l.BottomH--
-			} else {
-				// All at minimums but still over — shrink sessions (it's most resilient)
-				l.SessionsH--
-			}
-		}
-
-		// If under budget, give remainder to sessions (preview benefits most)
-		remainder := usable - l.SessionsH - l.MiddleH - l.BottomH
-		l.SessionsH += remainder
-	}
-
-	// Width: 50/50 split for middle row
-	l.LeftW = width / 2
-	l.RightW = width - l.LeftW
-
-	// Bottom row: 2/3 notes, 1/3 signals
-	l.BottomLeftW = width * 2 / 3
-	l.BottomRightW = width - l.BottomLeftW
-
-	return l
-}
 
 // Model is the root Bubbletea model.
 type Model struct {
@@ -171,28 +50,54 @@ type Model struct {
 	configPath string
 	width      int
 	height     int
-	focused    PanelID
 	mode       Mode
-	layout     Layout
 
 	view       ViewMode
 	gridCursor string // label of the selected target; survives list churn
 	gridIndex  int    // last resolved index, a fallback when the label is gone
+	// gridHost is the machine whose grid is open. Empty is the root, where
+	// each host shows as a single box. Backspace pops back to it.
+	gridHost string
+	// gridRootCursor is the root selection held while a host is open, so
+	// backspace lands on the box you came from rather than at the top.
+	gridRootCursor string
 
-	sessions           SessionsModel
-	repos              ReposModel
-	tasks              TasksModel
-	inbox              InboxModel
-	viz                VizModel
-	github             *sources.GitHubStatus
-	processes          map[string][]sources.ProcessInfo // repo label → configured process state
-	hosts              map[string]hostState             // remote host → last poll and link state
-	hermes             map[string]sources.HermesStatus  // hermes label → last status
-	sessionPreview     string
-	lastPreviewSession string
+	sessions       SessionsModel
+	repos          ReposModel
+	github         *sources.GitHubStatus
+	githubAt       time.Time
+	processes      map[string][]sources.ProcessInfo // repo label → configured process state
+	hosts          map[string]hostState             // remote host → last poll and link state
+	hermes         map[string]sources.HermesStatus  // hermes label → last status
+	hermesAt       time.Time
+	sessionPreview string // the grid's preview of the selected local session
+
+	// Local host observation beyond the session list: pane records, the
+	// read outcome, and per-project process observations. A failed read
+	// keeps the last-known data and marks it unavailable.
+	localPanes      []sources.PaneReport
+	localObservedAt time.Time
+	localOutcome    sources.Observation
+	localErr        string
+	procObs         map[string]sources.ProcessObservation // repo key → observation
+	procErrs        map[string]string                     // repo key → read failure
+
+	// svc is the shared process service; every start, stop, restart,
+	// adoption and reconcile goes through it, as it does in the daemon.
+	svc *process.Service
+	// sess, attn and procs are the views; nav is the return stack.
+	sess  sessionsModel
+	attn  attentionModel
+	procs processesModel
+	nav   []returnPoint
+	// now is a clock seam for tests.
+	now func() time.Time
 
 	transientErr   string
 	transientTimer int
+
+	// captureInput is the one-line capture prompt (c).
+	captureInput textinput.Model
 
 	// New session dialog state
 	newSessionInput textinput.Model
@@ -200,13 +105,10 @@ type Model struct {
 	newSessionPath  string // expanded path from step 0
 	newSessionErr   string // inline validation error
 
-	// Session search (/ key)
+	// Session search (/ key on the grid)
 	searchInput   textinput.Model
 	searchResults []int // indices into sessions.Sessions
 	searchCursor  int
-
-	// Visualizer picker (V key)
-	vizPickerCursor int
 }
 
 // NewModel creates a new root model with the given config.
@@ -221,35 +123,50 @@ func NewModel(cfg *config.Config, configPath string) Model {
 	si.CharLimit = 128
 	si.Width = 40
 
+	ci := textinput.New()
+	ci.Placeholder = "capture a thought"
+	ci.CharLimit = 512
+	ci.Width = 60
+
 	m := Model{
 		config:          cfg,
 		configPath:      configPath,
-		focused:         PanelSessions, // default focus
 		sessions:        NewSessionsModel(),
 		repos:           NewReposModel(),
-		tasks:           NewTasksModel(),
-		inbox:           InboxModel{Loading: true, FilePath: cfg.Obsidian.InboxFile},
-		viz:             NewVizModel(),
 		newSessionInput: ti,
 		searchInput:     si,
+		captureInput:    ci,
+		svc:             process.New(cfg, sources.DefaultRunner()),
+		sess:            newSessionsModel(),
+		attn:            newAttentionModel(),
+		procs:           newProcessesModel(),
+		now:             time.Now,
+		localOutcome:    sources.ObservationUnavailable,
+		localErr:        "not read yet",
+		view:            ViewSessions,
 	}
-	if cfg.General.DefaultView == "dashboard" {
-		m.view = ViewDashboard
+	if cfg.General.DefaultView == "grid" {
+		m.view = ViewGrid
 	}
 	return m
 }
 
 // Message types for source data
 type (
-	tmuxDataMsg    struct{ Sessions []sources.TmuxSession }
+	tmuxDataMsg struct {
+		Sessions []sources.TmuxSession
+		Panes    []sources.PaneReport
+		At       time.Time
+		Err      error
+	}
 	hermesDataMsg  struct{ Status sources.HermesStatus }
 	hermesTickMsg  struct{ Label string }
 	gitDataMsg     struct{ Repos []sources.GitRepoStatus }
-	tasksDataMsg   struct{ Tasks []sources.Task }
-	inboxDataMsg   struct{ Items []sources.Task }
 	githubDataMsg  struct{ Status *sources.GitHubStatus }
 	processDataMsg struct {
 		ByLabel map[string][]sources.ProcessInfo
+		Obs     map[string]sources.ProcessObservation
+		Errs    map[string]string
 	}
 	sourceErrMsg struct {
 		Source string
@@ -259,10 +176,8 @@ type (
 		Content string
 		Session string
 	}
-	sessionStatusMsg    struct{ Snapshots map[string]string } // session name → pane content
 	localTickMsg        struct{}
 	remoteTickMsg       struct{}
-	vizTickMsg          struct{}
 	clearErrMsg         struct{}
 	configSaveResultMsg struct{ Err error }
 )
@@ -271,13 +186,10 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.fetchTmux(),
 		m.fetchGit(),
-		m.fetchTasks(),
-		m.fetchInbox(),
 		m.fetchGitHub(),
 		m.fetchProcesses(),
 		m.localTick(),
 		m.remoteTick(),
-		m.vizTick(),
 		m.fetchHosts(),
 		m.fetchHermes(),
 	)
@@ -312,6 +224,13 @@ func (m Model) fetchHosts() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// transient shows a one-line notice under the view for a few seconds.
+func (m *Model) transient(text string) tea.Cmd {
+	m.transientErr = text
+	m.transientTimer = 3
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	modeBefore := m.mode
@@ -328,7 +247,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.width = 0
 		}
 		m.height = msg.Height
-		m.layout = CalculateLayout(m.width, m.height, len(m.repos.Repos))
 
 	case tea.KeyMsg:
 		cmd := m.handleKey(msg)
@@ -337,6 +255,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tmuxDataMsg:
+		if msg.Err != nil {
+			// Keep the last-known sessions; say the read failed. An
+			// unreadable server is not an empty one.
+			m.localOutcome = sources.ObservationUnavailable
+			m.localErr = msg.Err.Error()
+			m.sessions.Loading = false
+			cmds = append(cmds, m.transient("⚠ tmux: "+msg.Err.Error()), m.recomputeAttention())
+			break
+		}
 		// Filter out the cockpit session itself
 		var filtered []sources.TmuxSession
 		for _, s := range msg.Sessions {
@@ -346,60 +273,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sessions.Sessions = filtered
 		m.sessions.Loading = false
-		// A hook-reported status arrives on the same list-sessions call, so
-		// adopt it before deciding which sessions still need a pane capture.
+		m.localPanes = msg.Panes
+		m.localObservedAt = msg.At
+		m.localOutcome = sources.ObservationFresh
+		m.localErr = ""
+		// A hook-reported status arrives on the same list-sessions call.
 		m.sessions.AdoptReported()
-		cmds = append(cmds, m.fetchPreview(), m.fetchSessionStatuses())
-
-	case sessionStatusMsg:
-		for name, content := range msg.Snapshots {
-			m.sessions.UpdateStatus(name, content)
-		}
+		cmds = append(cmds, m.recomputeAttention(), m.fetchPreview())
 
 	case previewDataMsg:
-		if msg.Session == m.selectedSessionName() {
+		if msg.Session == m.gridLocalSession() {
 			m.sessionPreview = msg.Content
 		}
 
-	case gitDataMsg:
-		m.repos.Repos = msg.Repos
-		m.repos.Loading = false
-		m.layout = CalculateLayout(m.width, m.height, len(m.repos.Repos))
-		m.viz.SetRepos(msg.Repos)
-
-	case tasksDataMsg:
-		// Filter out completed tasks — they get cleaned from the view automatically
-		var active []sources.Task
-		for _, t := range msg.Tasks {
-			if !t.Done {
-				active = append(active, t)
-			}
-		}
-		m.tasks.Tasks = active
-		m.tasks.Loading = false
-		if m.tasks.Cursor >= len(m.tasks.Tasks) && m.tasks.Cursor > 0 {
-			m.tasks.Cursor = len(m.tasks.Tasks) - 1
-		}
-
-	case inboxDataMsg:
-		// Filter out completed items
-		var active []sources.Task
-		for _, t := range msg.Items {
-			if !t.Done {
-				active = append(active, t)
-			}
-		}
-		m.inbox.Items = active
-		m.inbox.Loading = false
-		if m.inbox.Cursor >= len(m.inbox.Items) && m.inbox.Cursor > 0 {
-			m.inbox.Cursor = len(m.inbox.Items) - 1
-		}
+	case panePreviewMsg:
+		m.sess.applyPreview(msg)
 
 	case githubDataMsg:
 		m.github = msg.Status
+		m.githubAt = m.now()
+		cmds = append(cmds, m.recomputeAttention())
 
 	case processDataMsg:
 		m.processes = msg.ByLabel
+		m.procObs = msg.Obs
+		m.procErrs = msg.Errs
+		cmds = append(cmds, m.recomputeAttention())
 
 	case hostDataMsg:
 		if m.hosts == nil {
@@ -409,16 +308,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h, ok := m.config.Host(msg.Host); ok {
 			cmds = append(cmds, m.hostTick(h))
 		}
+		cmds = append(cmds, m.recomputeAttention())
 
 	case hermesDataMsg:
 		if m.hermes == nil {
 			m.hermes = map[string]sources.HermesStatus{}
 		}
 		m.hermes[msg.Status.Label] = msg.Status
+		m.hermesAt = m.now()
 		for _, h := range m.config.Hermes {
 			if h.Label == msg.Status.Label {
 				cmds = append(cmds, m.hermesTick(h))
 			}
+		}
+		cmds = append(cmds, m.recomputeAttention())
+
+	case gitDataMsg:
+		m.repos.Repos = msg.Repos
+		m.repos.Loading = false
+		cmds = append(cmds, m.recomputeAttention())
+
+	case attachResultMsg:
+		if msg.Gone {
+			m.attn.message = "This target is no longer available"
+			m.procs.message = "This target is no longer available"
+			m.sess.message = "This target is no longer available"
+			cmds = append(cmds, m.refreshAll())
+		} else if msg.Err != nil {
+			cmds = append(cmds, m.transient("⚠ attach: "+msg.Err.Error()))
+		}
+
+	case procObsMsg:
+		if m.procs.apply(msg) && m.view == ViewProcesses {
+			cmds = append(cmds, m.fetchProcOutput(m.procs.output.lines))
+		}
+
+	case procOutputMsg:
+		m.procs.applyOutput(msg)
+
+	case procActionMsg:
+		if msg.key == m.procs.key {
+			delete(m.procs.pending, msg.process)
+			m.procs.message = msg.res.Message
+			if msg.res.Observation != nil {
+				m.procs.obs = msg.res.Observation
+				m.procs.observedAt = msg.res.Observation.ObservedAt
+				m.procs.err = ""
+				m.procs.resolveSelection()
+			}
+			cmds = append(cmds, m.fetchProcObs(), m.fetchProcesses())
 		}
 
 	case hermesTickMsg:
@@ -434,9 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case sourceErrMsg:
-		m.transientErr = "⚠ " + msg.Source + ": " + msg.Err.Error()
-		m.transientTimer = 3
-		cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		cmds = append(cmds, m.transient("⚠ "+msg.Source+": "+msg.Err.Error()))
 
 	case clearErrMsg:
 		m.transientTimer--
@@ -447,29 +383,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case sessionSavedMsg:
-		// Add to in-memory config and refresh repos panel
+		// Add to in-memory config and refresh
 		m.config.Repos = append(m.config.Repos, msg.Repo)
-		m.transientErr = "✓ saved " + msg.Repo.Label + " to config"
-		m.transientTimer = 3
-		cmds = append(cmds, m.fetchGit())
-		cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+		cmds = append(cmds, m.transient("✓ saved "+msg.Repo.Label+" to config"), m.fetchGit())
 
 	case configSaveResultMsg:
 		if msg.Err != nil {
-			m.transientErr = "⚠ config save: " + msg.Err.Error()
-			m.transientTimer = 3
-			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+			cmds = append(cmds, m.transient("⚠ config save: "+msg.Err.Error()))
 		}
 
 	case localTickMsg:
 		cmds = append(cmds,
 			m.fetchTmux(),
 			m.fetchGit(),
-			m.fetchTasks(),
-			m.fetchInbox(),
 			m.fetchProcesses(),
 			m.localTick(),
 		)
+		if m.view == ViewProcesses && m.mode != ModeConfirm {
+			cmds = append(cmds, m.fetchProcObs())
+		}
+		if m.view == ViewSessions {
+			cmds = append(cmds, m.fetchPanePreview())
+		}
 
 	case remoteTickMsg:
 		cmds = append(cmds,
@@ -477,25 +412,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remoteTick(),
 		)
 
-	case vizTickMsg:
-		m.viz.Tick()
-		cmds = append(cmds, m.vizTick())
-
 	case tmuxSwitchResultMsg:
 		if msg.Err != nil {
-			m.transientErr = "⚠ tmux: " + msg.Err.Error()
-			m.transientTimer = 3
-			cmds = append(cmds, tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }))
+			cmds = append(cmds, m.transient("⚠ tmux: "+msg.Err.Error()))
 		}
 		// On success: do nothing. The tmux client switched away but cockpit
 		// keeps running in the background. User returns via prefix+S or `cockpit`.
 	}
 
-	// Update text input if already in capture mode — skip the key that entered the mode
-	if modeBefore == ModeCapture {
+	// Forward keys to the capture prompt — skip the key that entered the mode
+	if modeBefore == ModeCapture && m.mode == ModeCapture {
 		if _, ok := msg.(tea.KeyMsg); ok {
 			var cmd tea.Cmd
-			m.tasks.TextInput, cmd = m.tasks.TextInput.Update(msg)
+			m.captureInput, cmd = m.captureInput.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -509,6 +438,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.newSessionInput, cmd = m.newSessionInput.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
+	// Forward keys to the attention filter while typing into it.
+	if modeBefore == ModeAttentionFilter && m.mode == ModeAttentionFilter {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			prev := m.attn.filter.Value()
+			var cmd tea.Cmd
+			m.attn.filter, cmd = m.attn.filter.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			if m.attn.filter.Value() != prev {
+				m.attn.query = m.attn.filter.Value()
+				m.attn.resolved = nil
+				m.attn.index = 0
+				m.attn.selected = ""
+				m.attn.resolveSelection()
+			}
+		}
+	}
+
+	// Forward keys to the session filter while typing into it.
+	if modeBefore == ModeSessionsFilter && m.mode == ModeSessionsFilter {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			prev := m.sess.filter.Value()
+			var cmd tea.Cmd
+			m.sess.filter, cmd = m.sess.filter.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			if m.sess.filter.Value() != prev {
+				m.sess.query = m.sess.filter.Value()
+				m.sess.resolve()
 			}
 		}
 	}
@@ -540,146 +504,59 @@ func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.handleNewSessionKey(msg)
 	case ModeSearch:
 		return m.handleSearchKey(msg)
-	case ModeVizPicker:
-		return m.handleVizPickerKey(msg)
+	case ModeAttentionFilter:
+		return m.handleAttentionFilterKey(msg)
+	case ModeSessionsFilter:
+		return m.handleSessionsFilterKey(msg)
+	case ModeConfirm:
+		return m.handleConfirmKey(msg)
 	default:
 		return m.handleNavKey(msg)
 	}
 }
 
 func (m *Model) handleNavKey(msg tea.KeyMsg) tea.Cmd {
-	if m.view == ViewGrid {
+	switch m.view {
+	case ViewGrid:
 		return m.handleGridKey(msg)
+	case ViewAttention:
+		return m.handleAttentionKey(msg)
+	case ViewProcesses:
+		return m.handleProcessesKey(msg)
+	default:
+		return m.handleSessionsKey(msg)
 	}
-	switch msg.String() {
-	case "tab":
-		m.focused = (m.focused + 1) % panelCount
-	case "shift+tab":
-		m.focused = (m.focused - 1 + panelCount) % panelCount
-	case "j":
-		m.cursorDown()
-		if m.focused == PanelSessions {
-			return m.fetchPreview()
-		}
-	case "k":
-		m.cursorUp()
-		if m.focused == PanelSessions {
-			return m.fetchPreview()
-		}
-	case "d":
-		m.view = ViewGrid
-		return nil
-	case "q":
-		return tea.Quit
-	case "r":
-		return tea.Batch(
-			m.fetchTmux(),
-			m.fetchGit(),
-			m.fetchTasks(),
-			m.fetchInbox(),
-			m.fetchGitHub(),
-		)
-	case "s":
-		if m.focused == PanelSessions && len(m.sessions.Sessions) > 0 {
-			return m.saveSessionAsRepo()
-		}
-	case "v":
-		m.viz.Next()
-		return nil
-	case "V":
-		m.mode = ModeVizPicker
-		m.vizPickerCursor = m.viz.Current
-		return nil
-	case "p":
-		if c := m.viz.ActiveClock(); c != nil {
-			c.TogglePomo()
-			return nil
-		}
-	case "R":
-		if c := m.viz.ActiveClock(); c != nil {
-			c.Reset()
-			return nil
-		}
-	case ".":
-		if c := m.viz.ActiveClock(); c != nil {
-			c.SkipPhase()
-			return nil
-		}
-	case "n":
-		m.mode = ModeNewSession
-		m.newSessionStep = 0
-		m.newSessionPath = ""
-		m.newSessionErr = ""
-		m.newSessionInput.SetValue("")
-		m.newSessionInput.Placeholder = "~/workspace/my-project"
-		m.newSessionInput.Focus()
-		return nil
-	case "c":
-		m.mode = ModeCapture
-		m.focused = PanelToday
-		m.tasks.Capturing = true
-		m.tasks.TextInput.Focus()
-		return nil
-	case "x":
-		if m.focused == PanelToday && len(m.tasks.Tasks) > 0 {
-			task := m.tasks.Tasks[m.tasks.Cursor]
-			err := sources.ToggleTask(m.config.Obsidian.TodayFile, task.Line)
-			if err != nil {
-				return func() tea.Msg {
-					return sourceErrMsg{Source: "toggle", Err: err}
-				}
-			}
-			// Remove completed task from view immediately
-			m.tasks.Tasks = append(m.tasks.Tasks[:m.tasks.Cursor], m.tasks.Tasks[m.tasks.Cursor+1:]...)
-			if m.tasks.Cursor >= len(m.tasks.Tasks) && m.tasks.Cursor > 0 {
-				m.tasks.Cursor--
-			}
-		} else if m.focused == PanelInbox && len(m.inbox.Items) > 0 {
-			item := m.inbox.Items[m.inbox.Cursor]
-			err := sources.ToggleTask(m.config.Obsidian.InboxFile, item.Line)
-			if err != nil {
-				return func() tea.Msg {
-					return sourceErrMsg{Source: "toggle", Err: err}
-				}
-			}
-			// Remove completed item from view immediately
-			m.inbox.Items = append(m.inbox.Items[:m.inbox.Cursor], m.inbox.Items[m.inbox.Cursor+1:]...)
-			if m.inbox.Cursor >= len(m.inbox.Items) && m.inbox.Cursor > 0 {
-				m.inbox.Cursor--
-			}
-		}
-	case "/":
-		m.mode = ModeSearch
-		m.searchInput.SetValue("")
-		m.searchInput.Focus()
-		m.updateSearchResults()
-		return nil
-	case "enter":
-		return m.handleEnter()
-	}
-	return nil
+}
+
+// startCapture opens the one-line capture prompt from any view.
+func (m *Model) startCapture() tea.Cmd {
+	m.mode = ModeCapture
+	m.captureInput.Reset()
+	return m.captureInput.Focus()
 }
 
 func (m *Model) handleCaptureKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc":
 		m.mode = ModeNavigation
-		m.tasks.Capturing = false
-		m.tasks.TextInput.Blur()
-		m.tasks.TextInput.Reset()
+		m.captureInput.Blur()
+		m.captureInput.Reset()
 	case "enter":
-		text := m.tasks.TextInput.Value()
-		if text != "" {
-			err := sources.AppendInbox(m.config.Obsidian.TodayFile, text)
-			if err != nil {
-				return func() tea.Msg {
-					return sourceErrMsg{Source: "capture", Err: err}
-				}
-			}
-			m.tasks.TextInput.Reset()
-			// Re-fetch tasks to show the new item
-			return m.fetchTasks()
+		text := strings.TrimSpace(m.captureInput.Value())
+		m.mode = ModeNavigation
+		m.captureInput.Blur()
+		m.captureInput.Reset()
+		if text == "" {
+			return nil
 		}
+		file := m.config.Obsidian.TodayFile
+		if file == "" {
+			return m.transient("⚠ capture: no today_file configured under [obsidian]")
+		}
+		if err := sources.AppendInbox(file, text); err != nil {
+			return m.transient("⚠ capture: " + err.Error())
+		}
+		return m.transient("✓ captured")
 	}
 	return nil
 }
@@ -782,8 +659,9 @@ func (m *Model) newSessionLaunch(save bool) tea.Cmd {
 		})
 	}
 
+	svc := m.svc
 	cmds = append(cmds, func() tea.Msg {
-		err := tmuxJumpRepo(repo)
+		err := tmuxJumpRepo(svc, repo)
 		return tmuxSwitchResultMsg{Err: err}
 	})
 
@@ -807,9 +685,14 @@ func (m *Model) labelExists(label string) bool {
 	return false
 }
 
-func (m *Model) saveSessionAsRepo() tea.Cmd {
-	session := m.sessions.Sessions[m.sessions.Cursor]
-	label := session.Name
+// saveSessionAsRepo adds the named session to config as a repo. The label is
+// passed in rather than read off a cursor: the grid's selection and the
+// sessions list are ordered differently, and the tmux calls below run on this
+// machine, so the caller is the one that knows the session is local.
+func (m *Model) saveSessionAsRepo(label string) tea.Cmd {
+	if label == "" {
+		return nil
+	}
 
 	configPath := m.configPath
 	return func() tea.Msg {
@@ -846,168 +729,6 @@ type sessionSavedMsg struct{ Repo config.RepoConfig }
 
 // tmuxSwitchResultMsg is sent after a tmux switch attempt.
 type tmuxSwitchResultMsg struct{ Err error }
-
-func (m *Model) handleEnter() tea.Cmd {
-	switch m.focused {
-	case PanelSessions:
-		if len(m.sessions.Sessions) > 0 {
-			name := m.sessions.Sessions[m.sessions.Cursor].Name
-			return func() tea.Msg {
-				err := tmuxSwitch(name)
-				return tmuxSwitchResultMsg{Err: err}
-			}
-		}
-	case PanelRepos:
-		if len(m.repos.Repos) > 0 {
-			r := m.repos.Repos[m.repos.Cursor]
-			repo := m.repoForLabel(r.Label, r.Path)
-			return func() tea.Msg {
-				err := tmuxJumpRepo(repo)
-				return tmuxSwitchResultMsg{Err: err}
-			}
-		}
-	}
-	return nil
-}
-
-func (m *Model) cursorUp() {
-	switch m.focused {
-	case PanelSessions:
-		m.sessions.CursorUp()
-	case PanelRepos:
-		m.repos.CursorUp()
-	case PanelToday:
-		m.tasks.CursorUp()
-	case PanelInbox:
-		m.inbox.CursorUp()
-	}
-}
-
-func (m *Model) cursorDown() {
-	switch m.focused {
-	case PanelSessions:
-		m.sessions.CursorDown()
-	case PanelRepos:
-		m.repos.CursorDown()
-	case PanelToday:
-		m.tasks.CursorDown()
-	case PanelInbox:
-		m.inbox.CursorDown()
-	}
-}
-
-// dashboardView renders the five-panel layout: sessions and preview, projects
-// and today, notes and the visualizer.
-func (m Model) dashboardView() string {
-	showLastCommit := m.layout.LeftW >= 50
-
-	// === Sessions panel (cards + preview, fixed heights) ===
-	sessionsContent := m.sessions.View(m.width, 4, m.focused == PanelSessions)
-	if m.width < 80 {
-		sessionsContent = m.sessions.CompactView(m.width, m.focused == PanelSessions)
-	}
-
-	// Preview lines derive from layout: sessions inner height minus cards (~5 lines) minus header (1)
-	previewMaxLines := m.layout.SessionsH - 8
-	if previewMaxLines < 2 {
-		previewMaxLines = 2
-	}
-	if m.sessionPreview != "" {
-		previewHeader := m.renderPreviewHeader(m.width - 4)
-		// Inner width: panel width minus border (2) minus padding (2)
-		innerW := m.width - 4
-		if innerW < 20 {
-			innerW = 20
-		}
-		lines := strings.Split(m.sessionPreview, "\n")
-		// Truncate long lines to prevent wrapping that blows the height budget
-		for i, line := range lines {
-			if len(line) > innerW {
-				lines[i] = line[:innerW-1] + "…"
-			}
-		}
-		if len(lines) > previewMaxLines {
-			lines = lines[len(lines)-previewMaxLines:]
-		}
-		for len(lines) < previewMaxLines {
-			lines = append(lines, "")
-		}
-		sessionsContent += "\n" + previewHeader + "\n" + strings.Join(lines, "\n")
-	} else {
-		emptyLines := make([]string, previewMaxLines+1)
-		for i := range emptyLines {
-			emptyLines[i] = ""
-		}
-		sessionsContent += "\n" + strings.Join(emptyLines, "\n")
-	}
-
-	sessionsPanel := RenderPanel("Sessions", sessionsContent, m.width, m.layout.SessionsH, m.focused == PanelSessions)
-
-	// === Middle row: Projects | Today (side by side) ===
-	repos := m.repos
-	reposPanel := RenderPanel("Projects",
-		repos.View(m.layout.LeftW, m.layout.MiddleH, m.focused == PanelRepos, showLastCommit),
-		m.layout.LeftW, m.layout.MiddleH, m.focused == PanelRepos)
-
-	tasks := m.tasks
-	tasksPanel := RenderPanel("Today",
-		tasks.View(m.layout.RightW, m.layout.MiddleH, m.focused == PanelToday),
-		m.layout.RightW, m.layout.MiddleH, m.focused == PanelToday)
-
-	middleRow := lipgloss.JoinHorizontal(lipgloss.Top, reposPanel, tasksPanel)
-
-	// === Bottom row: Notes (2/3) | Visualizer (1/3) ===
-	inboxPanel := RenderPanel("Notes",
-		m.inbox.View(m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox),
-		m.layout.BottomLeftW, m.layout.BottomH, m.focused == PanelInbox)
-	vizPanel := RenderPanel(m.viz.Name(),
-		m.viz.View(m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelViz),
-		m.layout.BottomRightW, m.layout.BottomH, m.focused == PanelViz)
-	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, inboxPanel, vizPanel)
-
-	// Key hints
-	keyhints := KeyhintsView(m.mode, m.focused, m.width)
-	if m.transientErr != "" {
-		keyhints = WarningText.Render(m.transientErr)
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		sessionsPanel,
-		middleRow,
-		bottomRow,
-		keyhints,
-	)
-}
-
-// renderPreviewHeader renders the toolbar above the session preview: a muted
-// breadcrumb on the left, a status dot on the right, with a rule between them.
-func (m Model) renderPreviewHeader(width int) string {
-	name := m.selectedSessionName()
-	crumb := Breadcrumb("local", name)
-
-	status := ""
-	if st, ok := m.sessions.Statuses[name]; ok {
-		switch st {
-		case sources.AgentStatusIdle:
-			status = StatusDot("Idle", VariantMuted)
-		case sources.AgentStatusWorking:
-			status = StatusDot("Working", VariantAccent)
-		case sources.AgentStatusNeedsInput:
-			status = StatusDot("Needs you", VariantWarning)
-		}
-	}
-
-	left := crumb
-	if status != "" {
-		left += "  " + status
-	}
-
-	pad := width - lipgloss.Width(left) - 1
-	if pad < 1 {
-		return left
-	}
-	return left + " " + MutedText.Render(strings.Repeat("─", pad))
-}
 
 func (m *Model) renderNewSessionDialog() string {
 	dialogW := 60
@@ -1058,12 +779,14 @@ func (m *Model) renderNewSessionDialog() string {
 
 // Source fetch commands
 func (m Model) fetchTmux() tea.Cmd {
+	now := m.now
 	return func() tea.Msg {
-		sessions, err := sources.GetTmuxSessions(context.Background())
+		at := now()
+		obs, err := sources.ObserveHost(context.Background(), sources.DefaultRunner(), "", at)
 		if err != nil {
-			return sourceErrMsg{Source: "tmux", Err: err}
+			return tmuxDataMsg{Err: err, At: at}
 		}
-		return tmuxDataMsg{Sessions: sessions}
+		return tmuxDataMsg{Sessions: obs.Sessions, Panes: obs.Panes, At: at}
 	}
 }
 
@@ -1072,28 +795,6 @@ func (m Model) fetchGit() tea.Cmd {
 	return func() tea.Msg {
 		results := sources.GetGitStatus(context.Background(), sources.LocalCommandRunner{}, repos)
 		return gitDataMsg{Repos: results}
-	}
-}
-
-func (m Model) fetchTasks() tea.Cmd {
-	path := m.config.Obsidian.TodayFile
-	return func() tea.Msg {
-		tasks, err := sources.ReadTasks(path)
-		if err != nil {
-			return sourceErrMsg{Source: "tasks", Err: err}
-		}
-		return tasksDataMsg{Tasks: tasks}
-	}
-}
-
-func (m Model) fetchInbox() tea.Cmd {
-	path := m.config.Obsidian.InboxFile
-	return func() tea.Msg {
-		items, err := sources.ReadTasks(path)
-		if err != nil {
-			return sourceErrMsg{Source: "inbox", Err: err}
-		}
-		return inboxDataMsg{Items: items}
 	}
 }
 
@@ -1121,18 +822,27 @@ func (m Model) fetchProcesses() tea.Cmd {
 	if len(repos) == 0 {
 		return nil
 	}
+	now := m.now
 	return func() tea.Msg {
 		ctx := context.Background()
 		r := sources.DefaultRunner()
-		byLabel := make(map[string][]sources.ProcessInfo, len(repos))
+		msg := processDataMsg{
+			ByLabel: make(map[string][]sources.ProcessInfo, len(repos)),
+			Obs:     make(map[string]sources.ProcessObservation, len(repos)),
+			Errs:    map[string]string{},
+		}
 		for _, repo := range repos {
-			infos, err := sources.InspectProcesses(ctx, r, repo)
+			obs, err := sources.ObserveProcesses(ctx, r, repo, now())
 			if err != nil {
+				// A failed read is recorded, not dropped: the queue must
+				// show reduced coverage rather than a clean project.
+				msg.Errs[repo.Key()] = err.Error()
 				continue
 			}
-			byLabel[repo.Label] = infos
+			msg.ByLabel[repo.Label] = obs.Processes
+			msg.Obs[repo.Key()] = obs
 		}
-		return processDataMsg{ByLabel: byLabel}
+		return msg
 	}
 }
 
@@ -1146,38 +856,23 @@ func (m Model) remoteTick() tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return remoteTickMsg{} })
 }
 
-// vizTick drives visualizer animation at ~16fps.
-func (m Model) vizTick() tea.Cmd {
-	return tea.Tick(time.Second/16, func(time.Time) tea.Msg { return vizTickMsg{} })
-}
-
-func (m Model) selectedSessionName() string {
-	if len(m.sessions.Sessions) == 0 {
-		return ""
-	}
-	return m.sessions.Sessions[m.sessions.Cursor].Name
-}
-
+// fetchPreview reads the grid's selected local session's visible screen. It
+// is skipped below the mobile width, where nothing renders it, and outside
+// the grid, which has no preview panel.
 func (m Model) fetchPreview() tea.Cmd {
-	// capture-pane on every cursor move is latency nobody wants over a phone
-	// link, and nothing renders the preview below this width anyway.
-	if m.width < MobileMaxWidth {
+	if m.width < MobileMaxWidth || m.view != ViewGrid {
 		return nil
 	}
-	name := m.selectedSessionName()
+	name := m.gridLocalSession()
 	if name == "" {
 		return nil
 	}
-	maxLines := m.layout.SessionsH - 6 // cards take ~4 rows, leave rest for preview
-	if maxLines < 3 {
-		maxLines = 3
-	}
 	return func() tea.Msg {
-		content, err := sources.CapturePane(context.Background(), name, maxLines)
+		out, err := sources.DefaultRunner().Run(context.Background(), sources.CapturePaneVisibleArgs(name)...)
 		if err != nil {
 			return previewDataMsg{Content: MutedText.Render("(no preview available)"), Session: name}
 		}
-		return previewDataMsg{Content: content, Session: name}
+		return previewDataMsg{Content: trimPadding(sources.StripControl(out)), Session: name}
 	}
 }
 
@@ -1211,69 +906,6 @@ func (m *Model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	return nil
-}
-
-func (m *Model) handleVizPickerKey(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "esc", "V", "q":
-		m.mode = ModeNavigation
-		return nil
-	case "enter":
-		m.viz.Select(m.vizPickerCursor)
-		m.mode = ModeNavigation
-		return nil
-	case "up", "k", "ctrl+k":
-		if m.vizPickerCursor > 0 {
-			m.vizPickerCursor--
-		}
-		return nil
-	case "down", "j", "ctrl+j":
-		if m.vizPickerCursor < len(m.viz.Visualizers)-1 {
-			m.vizPickerCursor++
-		}
-		return nil
-	}
-	return nil
-}
-
-func (m *Model) renderVizPickerDialog() string {
-	dialogW := 40
-	if m.width < 44 {
-		dialogW = m.width - 4
-	}
-
-	var lines []string
-	lines = append(lines, AccentText.Bold(true).Render("Visualizer"))
-	lines = append(lines, "")
-
-	for i, v := range m.viz.Visualizers {
-		name := v.Name()
-		marker := "   "
-		if i == m.viz.Current {
-			marker = MutedText.Render(" • ")
-		}
-		line := marker + name
-		if i == m.vizPickerCursor {
-			line = AccentText.Bold(true).Render("▸ ") + AccentText.Bold(true).Render(name)
-			if i == m.viz.Current {
-				line = AccentText.Bold(true).Render("▸") + MutedText.Render("•") + AccentText.Bold(true).Render(name)
-			}
-		}
-		lines = append(lines, "  "+line)
-	}
-
-	lines = append(lines, "")
-	lines = append(lines, MutedText.Render("  ↑↓ navigate  Enter select  Esc cancel"))
-
-	content := strings.Join(lines, "\n")
-
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorAccent).
-		Padding(1, 2).
-		Width(dialogW)
-
-	return style.Render(content)
 }
 
 func (m *Model) updateSearchResults() {
@@ -1350,35 +982,18 @@ func (m *Model) renderSearchDialog() string {
 	return style.Render(content)
 }
 
-func (m Model) fetchSessionStatuses() tea.Cmd {
-	// One capture-pane per session per tick is the most expensive poll
-	// cockpit runs. A session that reports its own status needs none.
-	sessions := m.sessions.NeedingCapture()
-	return func() tea.Msg {
-		ctx := context.Background()
-		snapshots := make(map[string]string, len(sessions))
-		for _, s := range sessions {
-			content, err := sources.CapturePaneContent(ctx, s.Name)
-			if err != nil {
-				continue
-			}
-			snapshots[s.Name] = content
-		}
-		return sessionStatusMsg{Snapshots: snapshots}
-	}
-}
-
 // tmuxSwitch switches to an existing tmux session.
 func tmuxSwitch(name string) error {
 	return exec.Command("tmux", "switch-client", "-t", name).Run()
 }
 
 // tmuxJumpRepo switches to a repo's tmux session, creating it if needed and
-// bringing its configured processes up as sibling windows.
+// bringing its configured processes up as sibling windows, through the
+// shared service so the project lock and the stop overrides apply.
 //
 // Window 0 stays a plain shell and is what you land on, so a project with a
 // noisy dev server does not drop you into a log.
-func tmuxJumpRepo(repo config.RepoConfig) error {
+func tmuxJumpRepo(svc *process.Service, repo config.RepoConfig) error {
 	if !validLabel.MatchString(repo.Label) {
 		return fmt.Errorf("invalid session label %q: must be alphanumeric, hyphens, or underscores", repo.Label)
 	}
@@ -1386,14 +1001,12 @@ func tmuxJumpRepo(repo config.RepoConfig) error {
 	ctx := context.Background()
 	r := sources.DefaultRunner()
 
-	created, err := sources.EnsureSession(ctx, r, repo)
+	// A process that fails to launch is worth knowing about, but it must never
+	// stand between the user and the session they asked for.
+	created, _, err := svc.Prepare(ctx, r, repo)
 	if err != nil {
 		return err
 	}
-
-	// A process that fails to launch is worth knowing about, but it must never
-	// stand between the user and the session they asked for.
-	_ = sources.ReconcileProcesses(ctx, r, repo)
 
 	if created {
 		_, _ = r.Run(ctx, sources.SelectFirstWindowArgs(repo.Label)...)

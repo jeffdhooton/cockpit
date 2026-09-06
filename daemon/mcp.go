@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 // baselineProtocol is the version assumed when a client asks for one this

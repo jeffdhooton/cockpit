@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // CommandRunner runs a program in a directory and returns its stdout. Git

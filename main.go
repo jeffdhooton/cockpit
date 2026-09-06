@@ -1,11 +1,11 @@
 package main
 
-import "github.com/jhoot/cockpit/cmd"
+import "github.com/jeffdhooton/cockpit/cmd"
 
 var version = "dev"
 
 func main() {
 	cmd.SetVersion(version)
-	cmd.SetConfigTemplate(func() string { return configTemplate })
+	cmd.SetConfigTemplate(configTemplate)
 	cmd.Execute()
 }

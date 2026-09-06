@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 var (

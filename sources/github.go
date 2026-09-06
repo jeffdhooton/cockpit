@@ -3,14 +3,16 @@ package sources
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // GitHubStatus aggregates GitHub PR and CI data across all repos.
@@ -27,7 +29,29 @@ type RepoCheck struct {
 	RepoLabel string
 	PRCount   int
 	CIStatus  string // "passing", "failing", "pending", "none"
+	// Coverage says what the check actually established. A remote repo is
+	// not checked at all; a local one whose remote or gh call failed is
+	// an error, not a passing repo.
+	Coverage string
+	Err      error
+	// Identity of the run behind CIStatus, for navigation.
+	Repo   string // owner/name
+	Branch string // the branch checked
+	RunID  string
+	RunURL string
 }
+
+// Coverage values for RepoCheck.
+const (
+	CoverageChecked           = "checked"
+	CoverageRemoteUnsupported = "remote_unsupported"
+	CoverageNoGitHubRemote    = "no_github_remote"
+	CoverageError             = "error"
+)
+
+// ciBranch is the one branch V1 checks. It is labelled everywhere the result
+// is shown, so a green main is never mistaken for a green feature branch.
+const ciBranch = "main"
 
 type ghPR struct {
 	Number         int    `json:"number"`
@@ -39,6 +63,9 @@ type ghPR struct {
 type ghRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	ID         int64  `json:"databaseId"`
+	URL        string `json:"url"`
+	HeadBranch string `json:"headBranch"`
 }
 
 var (
@@ -108,22 +135,29 @@ func fetchRepoCheck(ctx context.Context, repo config.RepoConfig) RepoCheck {
 	check := RepoCheck{
 		RepoLabel: repo.Label,
 		CIStatus:  "none",
+		Branch:    ciBranch,
 	}
 
 	// GitHub checks derive owner/repo from a local checkout and run gh here.
 	// A remote repo has no local checkout to ask, so it is reported as
 	// unchecked rather than checked against the wrong path.
 	if repo.Host != "" {
+		check.Coverage = CoverageRemoteUnsupported
 		return check
 	}
 	remoteURL, err := LocalCommandRunner{}.RunIn(ctx, repo.Path, "git", "remote", "get-url", "origin")
 	if err != nil {
+		check.Coverage = CoverageError
+		check.Err = fmt.Errorf("git remote: %w", err)
 		return check
 	}
 	ownerRepo, err := ParseGitHubRepo(remoteURL)
 	if err != nil {
+		check.Coverage = CoverageNoGitHubRemote
 		return check
 	}
+	check.Repo = ownerRepo
+	check.Coverage = CoverageChecked
 
 	// Fetch PRs
 	prOut, err := ghCommand(ctx, "pr", "list", "--repo", ownerRepo,
@@ -139,21 +173,37 @@ func fetchRepoCheck(ctx context.Context, repo config.RepoConfig) RepoCheck {
 		}
 	}
 
-	// Fetch CI status
+	// Fetch CI status. A failed fetch is an error, never "none": an
+	// unreadable run is not a passing one.
 	runOut, err := ghCommand(ctx, "run", "list", "--repo", ownerRepo,
-		"--branch", "main", "--limit", "1", "--json", "status,conclusion")
-	if err == nil {
-		runs, err := ParseRunList(runOut)
-		if err == nil && len(runs) > 0 {
-			run := runs[0]
-			switch {
-			case run.Conclusion == "failure":
-				check.CIStatus = "failing"
-			case run.Conclusion == "success":
-				check.CIStatus = "passing"
-			case run.Status == "in_progress" || run.Status == "queued":
-				check.CIStatus = "pending"
-			}
+		"--branch", ciBranch, "--limit", "1", "--json", "status,conclusion,databaseId,url,headBranch")
+	if err != nil {
+		check.Coverage = CoverageError
+		check.Err = fmt.Errorf("gh run list: %w", err)
+		return check
+	}
+	runs, err := ParseRunList(runOut)
+	if err != nil {
+		check.Coverage = CoverageError
+		check.Err = fmt.Errorf("gh run list: %w", err)
+		return check
+	}
+	if len(runs) > 0 {
+		run := runs[0]
+		if run.ID != 0 {
+			check.RunID = strconv.FormatInt(run.ID, 10)
+		}
+		check.RunURL = run.URL
+		if run.HeadBranch != "" {
+			check.Branch = run.HeadBranch
+		}
+		switch {
+		case run.Conclusion == "failure":
+			check.CIStatus = "failing"
+		case run.Conclusion == "success":
+			check.CIStatus = "passing"
+		case run.Status == "in_progress" || run.Status == "queued":
+			check.CIStatus = "pending"
 		}
 	}
 
@@ -162,5 +212,13 @@ func fetchRepoCheck(ctx context.Context, repo config.RepoConfig) RepoCheck {
 
 func ghCommand(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	return cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("%s", strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
 }

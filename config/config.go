@@ -36,7 +36,9 @@ type Config struct {
 type GeneralConfig struct {
 	SessionName     string `toml:"session_name"`
 	RefreshInterval int    `toml:"refresh_interval"`
-	DefaultView     string `toml:"default_view"` // "grid" (default) or "dashboard"
+	// DefaultView is the startup view: "sessions" (default) or "grid".
+	// "dashboard" is accepted as an alias of "sessions" for older configs.
+	DefaultView string `toml:"default_view"`
 }
 
 type ObsidianConfig struct {
@@ -241,19 +243,35 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("no config found at %s", path)
 	}
 
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("config: read error: %w", err)
+	}
+	cfg, _, err := Parse(raw)
+	return cfg, err
+}
+
+// Parse decodes, defaults, expands and validates a config document. It also
+// returns the keys the document set that nothing reads, so a diagnostic can
+// name them; Load ignores them, as it always has.
+func Parse(raw []byte) (*Config, []string, error) {
 	var cfg Config
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return nil, fmt.Errorf("config: parse error: %w", err)
+	meta, err := toml.Decode(string(raw), &cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("config: parse error: %w", err)
+	}
+	var unknown []string
+	for _, k := range meta.Undecoded() {
+		unknown = append(unknown, k.String())
 	}
 
 	applyDefaults(&cfg)
 	expandPaths(&cfg)
 
 	if err := validate(&cfg); err != nil {
-		return nil, err
+		return nil, unknown, err
 	}
-
-	return &cfg, nil
+	return &cfg, unknown, nil
 }
 
 func applyDefaults(cfg *Config) {
@@ -263,8 +281,9 @@ func applyDefaults(cfg *Config) {
 	if cfg.General.RefreshInterval == 0 {
 		cfg.General.RefreshInterval = 5
 	}
-	if cfg.General.DefaultView == "" {
-		cfg.General.DefaultView = "grid"
+	switch cfg.General.DefaultView {
+	case "", "dashboard":
+		cfg.General.DefaultView = "sessions"
 	}
 	if cfg.GitHub.RefreshInterval == 0 {
 		cfg.GitHub.RefreshInterval = 60
@@ -307,9 +326,9 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("config: stale_session_threshold is invalid: %w", err)
 	}
 	switch cfg.General.DefaultView {
-	case "", "grid", "dashboard":
+	case "", "sessions", "grid":
 	default:
-		return fmt.Errorf("config: default_view must be \"grid\" or \"dashboard\", got %q", cfg.General.DefaultView)
+		return fmt.Errorf("config: default_view must be \"sessions\" or \"grid\", got %q", cfg.General.DefaultView)
 	}
 	if err := validateProcesses(cfg); err != nil {
 		return err

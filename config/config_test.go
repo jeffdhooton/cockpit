@@ -123,11 +123,31 @@ stale_session_threshold = "notaduration"
 	}
 }
 
-func TestDefaultViewDefaultsToGrid(t *testing.T) {
+func TestDefaultViewAcceptsSessionsAndAliasesDashboard(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":                             "sessions",
+		"default_view = \"sessions\"":  "sessions",
+		"default_view = \"grid\"":      "grid",
+		"default_view = \"dashboard\"": "sessions",
+	} {
+		cfg, _, err := Parse([]byte("[general]\n" + raw + "\n"))
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		if cfg.General.DefaultView != want {
+			t.Errorf("%q → %q, want %q", raw, cfg.General.DefaultView, want)
+		}
+	}
+	if _, _, err := Parse([]byte("[general]\ndefault_view = \"nope\"\n")); err == nil {
+		t.Error("an unknown view must be rejected")
+	}
+}
+
+func TestDefaultViewDefaultsToSessions(t *testing.T) {
 	cfg := &Config{}
 	applyDefaults(cfg)
-	if cfg.General.DefaultView != "grid" {
-		t.Errorf("DefaultView = %q, want %q", cfg.General.DefaultView, "grid")
+	if cfg.General.DefaultView != "sessions" {
+		t.Errorf("DefaultView = %q, want %q", cfg.General.DefaultView, "sessions")
 	}
 }
 
@@ -142,14 +162,14 @@ func TestDefaultViewRejectsUnknownValue(t *testing.T) {
 	}
 }
 
-func TestDefaultViewAcceptsDashboard(t *testing.T) {
+func TestDefaultViewAcceptsGrid(t *testing.T) {
 	cfg := &Config{
-		General:  GeneralConfig{RefreshInterval: 5, DefaultView: "dashboard"},
+		General:  GeneralConfig{RefreshInterval: 5, DefaultView: "grid"},
 		Obsidian: ObsidianConfig{VaultPath: "/tmp/vault"},
 		Signals:  SignalsConfig{StaleSessionThreshold: "24h"},
 	}
 	if err := validate(cfg); err != nil {
-		t.Errorf("validate rejected dashboard: %v", err)
+		t.Errorf("validate rejected grid: %v", err)
 	}
 }
 

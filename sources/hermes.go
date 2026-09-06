@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // hermesBodyLimit bounds the status document. It is a few hundred bytes; the

@@ -24,7 +24,7 @@ func boolean(description string) map[string]any {
 	return map[string]any{"type": "boolean", "description": description}
 }
 
-const projectDesc = "Project label — the same string cockpit uses as the tmux session name"
+const projectDesc = "Project label — the same string cockpit uses as the tmux session name. A remote project is addressed as host/label, or with the host argument."
 const processDesc = "Process name, which is its tmux window name"
 
 // Definitions returns every tool this daemon exposes. The names and argument
@@ -38,23 +38,25 @@ func (t *Tools) Definitions() []ToolDefinition {
 			InputSchema: obj(map[string]any{}),
 		},
 		{
-			Name:        "cockpit_list_processes",
-			Description: "List a project's processes with state (running, dead, not_started), window index, and pane process id. Also reports windows the config does not declare, such as spawned agents.",
-			InputSchema: obj(map[string]any{"project": str(projectDesc)}, "project"),
+			Name: "cockpit_list_processes",
+			Description: "List a project's processes with state (running, dead, not_started), desired_state (running, or stopped when the user stopped it on purpose), outcome, exit_code, window and pane ids, and whether cockpit manages the window. " +
+				"Also reports windows the config does not declare, such as spawned agents. A failed read returns outcome unavailable rather than an empty list.",
+			InputSchema: obj(map[string]any{"project": str(projectDesc), "host": str("Configured host name for a remote project (optional)")}, "project"),
 		},
 		{
-			Name:        "cockpit_read_output",
+			Name: "cockpit_read_output",
 			Description: "Read the last N lines of a process's terminal output. Works for configured processes and for any open window, including spawned agents. " +
 				"Reports what it dropped: blank_lines_removed counts collapsed pane padding, and truncated means the capture reached the requested scrollback so older output exists above it.",
 			InputSchema: obj(map[string]any{
 				"project": str(projectDesc),
-				"process": str(processDesc),
+				"process": str(processDesc + " (or pass pane_id)"),
+				"pane_id": str("Pane id (%N) from cockpit_workspaces, as an alternative to process; must belong to the project's session"),
 				"lines":   integer("Number of lines of scrollback (default 100, max 10000)"),
-			}, "project", "process"),
+			}, "project"),
 		},
 		{
 			Name:        "cockpit_start",
-			Description: "Start a configured process. A process that is already running is left alone; a dead window is reused rather than duplicated.",
+			Description: "Start a configured process. A process that is already running is left alone; a dead window is reused rather than duplicated. Clears a previous stop. Refused when a window of that name exists that cockpit did not start.",
 			InputSchema: obj(map[string]any{
 				"project": str(projectDesc),
 				"process": str(processDesc),
@@ -62,7 +64,7 @@ func (t *Tools) Definitions() []ToolDefinition {
 		},
 		{
 			Name:        "cockpit_stop",
-			Description: "Stop a running process by closing its window",
+			Description: "Stop a running process by closing its window. The stop is remembered on the tmux session, so the process stays stopped across project entry and cockpit restarts until cockpit_start is called; it is refused for a window cockpit did not start, or one that has been split.",
 			InputSchema: obj(map[string]any{
 				"project": str(projectDesc),
 				"process": str(processDesc),
@@ -79,6 +81,18 @@ func (t *Tools) Definitions() []ToolDefinition {
 		{
 			Name:        "cockpit_signals",
 			Description: "Get everything that needs attention across all projects: dead processes, failing checks, unpushed commits, and stale sessions, most urgent first",
+			InputSchema: obj(map[string]any{}),
+		},
+		{
+			Name: "cockpit_workspaces",
+			Description: "Read the workspace tree: every host, its live tmux sessions, and each session's panes classified as agent (hook record or a claude/codex foreground command; status is unknown until a hook reports), process (a configured process, with the same display text as cockpit_list_processes), shell, or other, plus each session's status rollup, agent and process counts, project branch summary, and configured repos with no session. " +
+				"Read-only: no previews, no navigation, nothing started; read a pane with cockpit_read_output and pane_id. schema_version 1.",
+			InputSchema: obj(map[string]any{}),
+		},
+		{
+			Name: "cockpit_attention",
+			Description: "Read the attention queue: every item that needs a person, with a stable id, kind, priority, host, project, typed target, evidence source, and freshness, plus per-source coverage saying what could and could not be observed. " +
+				"Read-only: it navigates nowhere, dismisses nothing and starts nothing. Housekeeping items (unpushed commits, stale sessions) are flagged so they do not count as urgent. schema_version 1.",
 			InputSchema: obj(map[string]any{}),
 		},
 		{

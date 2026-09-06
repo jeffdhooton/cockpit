@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // fakeRunner records every tmux call and returns scripted output keyed by the
@@ -68,14 +68,17 @@ func TestReconcileStartsMissingAutoStartProcesses(t *testing.T) {
 
 func TestReconcileRespawnsDeadWindow(t *testing.T) {
 	f := &fakeRunner{outputs: map[string]string{
-		"list-windows": "0|shell|0|111|1\n1|dev|1|222|0\n",
+		"list-windows": "0|shell|0|111|1||@0|%0|1||100|200\n1|dev|1|222|0|1|@1|%1|1|dev|100|200\n",
 	}}
 	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
 
 	ReconcileProcesses(context.Background(), f, repo)
 
-	if len(f.called("respawn-window")) != 1 {
+	respawns := f.called("respawn-window")
+	if len(respawns) != 1 {
 		t.Errorf("dead window should be respawned, calls: %v", f.calls)
+	} else if !slices.Contains(respawns[0], "@1") {
+		t.Errorf("respawn must address the window by id, not name: %v", respawns[0])
 	}
 	if len(f.called("new-window")) != 0 {
 		t.Errorf("dead window must not be duplicated, calls: %v", f.calls)
@@ -178,6 +181,130 @@ func TestReconcileStartsWhenTheSessionIsVerifiedAbsent(t *testing.T) {
 
 	if got := f.called("new-window"); len(got) != 1 {
 		t.Errorf("want dev started in a session known to be absent, got %v", f.calls)
+	}
+}
+
+func TestReconcileLeavesAnUnmarkedDeadWindowAlone(t *testing.T) {
+	// A window that merely shares the process's name was not created by
+	// cockpit. Respawning it would replace someone else's work; it stays
+	// inspection-only until adopted.
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "0|shell|0|111|1||@0|%0|1||100|200\n1|dev|1|222|0|1|@1|%1|1||100|200\n",
+	}}
+	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
+
+	ReconcileProcesses(context.Background(), f, repo)
+
+	if got := f.called("respawn-window"); len(got) != 0 {
+		t.Errorf("an unmarked window must not be respawned: %v", got)
+	}
+	if got := f.called("new-window"); len(got) != 0 {
+		t.Errorf("a name collision must not produce a duplicate window: %v", got)
+	}
+}
+
+func TestReconcileSkipsAStoppedProcess(t *testing.T) {
+	// The override is the user's stop intent. Present or absent, the process
+	// stays down until an explicit Start.
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "0|shell|0|111|1||@0|%0|1||100|200\n",
+		"show-options": "@cockpit_stopped_dev v1:1700000000\n",
+	}}
+	repo := devRepo(
+		config.ProcessConfig{Name: "dev", Command: "npm run dev"},
+		config.ProcessConfig{Name: "worker", Command: "npm run worker"},
+	)
+
+	if errs := ReconcileProcesses(context.Background(), f, repo); len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	created := f.called("new-window")
+	if len(created) != 1 || !slices.Contains(created[0], "worker") {
+		t.Errorf("only the unoverridden process should start, got %v", created)
+	}
+}
+
+func TestReconcileSkipsASplitManagedWindow(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "1|dev|1|222|0|1|@1|%1|2|dev|100|200\n",
+	}}
+	repo := devRepo(config.ProcessConfig{Name: "dev", Command: "npm run dev"})
+
+	ReconcileProcesses(context.Background(), f, repo)
+
+	if got := f.called("respawn-window"); len(got) != 0 {
+		t.Errorf("respawning a split window would kill its other panes: %v", got)
+	}
+}
+
+func TestObserveProcessesClassifiesOwnershipAndIntent(t *testing.T) {
+	f := &fakeRunner{outputs: map[string]string{
+		"list-windows": "0|shell|0|111|1||@0|%0|1||100|200\n" +
+			"1|dev|0|222|0||@1|%1|1|dev|100|200\n" +
+			"2|worker|1|333|0|0|@2|%2|1|worker|100|200\n" +
+			"3|tests|1|444|0|2|@3|%3|1||100|200\n" +
+			"4|api|0|555|0||@4|%4|2|api|100|200\n",
+		"show-options": "@cockpit_stopped_cron v1:1700000000\n@cockpit_stopped_dev v1:1700000001\n",
+	}}
+	repo := devRepo(
+		config.ProcessConfig{Name: "dev", Command: "x"},
+		config.ProcessConfig{Name: "worker", Command: "x"},
+		config.ProcessConfig{Name: "tests", Command: "x"},
+		config.ProcessConfig{Name: "api", Command: "x"},
+		config.ProcessConfig{Name: "cron", Command: "x"},
+		config.ProcessConfig{Name: "never", Command: "x"},
+	)
+
+	obs, err := ObserveProcesses(context.Background(), f, repo, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !obs.SessionExists || obs.Generation != "100-200" {
+		t.Errorf("observation = %+v", obs)
+	}
+	by := map[string]ProcessInfo{}
+	for _, p := range obs.Processes {
+		by[p.Name] = p
+	}
+
+	if p := by["dev"]; p.Outcome != OutcomeRunning || !p.Managed || p.DesiredState != DesiredStopped ||
+		p.Display != "Running · automatic startup paused" || !p.Controllable() {
+		t.Errorf("dev = %+v", p)
+	}
+	if p := by["worker"]; p.Outcome != OutcomeCompleted || p.ExitCode == nil || *p.ExitCode != 0 || p.State != ProcessDead {
+		t.Errorf("worker = %+v", p)
+	}
+	if p := by["tests"]; p.Outcome != OutcomeExited || !p.Adoptable || p.Managed || p.Controllable() ||
+		p.Display != "Exited (code 2) (unmanaged)" {
+		t.Errorf("tests = %+v", p)
+	}
+	if p := by["api"]; !p.Split || p.Controllable() || p.Outcome != OutcomeRunning {
+		t.Errorf("api = %+v", p)
+	}
+	if p := by["cron"]; p.Outcome != OutcomeStopped || p.Display != "Stopped by you" || p.State != ProcessNotStarted {
+		t.Errorf("cron = %+v", p)
+	}
+	if p := by["never"]; p.Outcome != OutcomeNotStarted || p.DesiredState != DesiredRunning {
+		t.Errorf("never = %+v", p)
+	}
+	if p := by["shell"]; p.Configured || p.Outcome != OutcomeRunning {
+		t.Errorf("shell = %+v", p)
+	}
+}
+
+func TestObserveProcessesReportsAFailedReadAsAnError(t *testing.T) {
+	f := &fakeRunner{errs: map[string]error{"list-windows": errors.New("permission denied")}}
+	if _, err := ObserveProcesses(context.Background(), f, devRepo(config.ProcessConfig{Name: "dev", Command: "x"}), time.Now()); err == nil {
+		t.Fatal("an unreadable session is unknown, not empty")
+	}
+
+	absent := &fakeRunner{errs: map[string]error{"list-windows": errors.New("can't find session: app")}}
+	obs, err := ObserveProcesses(context.Background(), absent, devRepo(config.ProcessConfig{Name: "dev", Command: "x"}), time.Now())
+	if err != nil || obs.SessionExists {
+		t.Fatalf("a verified absent session is an empty observation: %v %+v", err, obs)
+	}
+	if obs.Processes[0].Outcome != OutcomeNotStarted {
+		t.Errorf("got %+v", obs.Processes[0])
 	}
 }
 

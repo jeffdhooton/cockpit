@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/daemon"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/daemon"
+	"github.com/jeffdhooton/cockpit/sources"
 	"github.com/spf13/cobra"
 )
 
@@ -53,11 +54,14 @@ status is worth that.`,
 	},
 }
 
-// resolveTarget finds the tmux target this hook is running inside.
+// resolveTarget finds the tmux pane this hook is running inside.
 //
 // Prefer the environment cockpit injects into processes it launched, then ask
-// tmux directly — which covers every session started by hand, and that is
-// most of them and most of the value.
+// tmux about this pane — TMUX_PANE is set in every pane's environment and
+// inherited by the agent and its hooks — so the report is bound to the pane
+// the agent actually occupies, never to whichever pane a client has
+// selected. Only when that fails does it fall back to the legacy
+// session:window form.
 func resolveTarget() string {
 	if t := os.Getenv("COCKPIT_STATUS_TARGET"); t != "" {
 		return t
@@ -75,12 +79,32 @@ func resolveTarget() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
+	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+		out, err := exec.CommandContext(ctx, tmux, "display-message", "-p", "-t", pane,
+			"#{pid}|#{start_time}|#{session_id}|#{window_id}|#{pane_id}").Output()
+		if err == nil {
+			if t := paneTarget(strings.TrimSpace(string(out)), pane); t != "" {
+				return t
+			}
+		}
+	}
+
 	out, err := exec.CommandContext(ctx, tmux, "display-message", "-p",
 		"#{session_name}:#{window_name}").Output()
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// paneTarget renders the pane form from display-message output, refusing
+// anything that does not describe the pane asked about.
+func paneTarget(out, pane string) string {
+	parts := strings.Split(out, "|")
+	if len(parts) != 5 || parts[4] != pane || parts[0] == "" {
+		return ""
+	}
+	return sources.PaneStatusTarget(parts[0]+"-"+parts[1], parts[2], parts[3], parts[4])
 }
 
 // lookTmux resolves tmux by absolute path. The hook inherits whatever
@@ -106,8 +130,11 @@ func runHookStatus(stdin io.Reader, engine, target string, port int, keyDir stri
 	if err != nil {
 		return nil
 	}
+	// Only the event name and the engine's session id leave this process;
+	// the prompt, the tool input and the reply stay behind.
 	var event struct {
-		Event string `json:"hook_event_name"`
+		Event     string `json:"hook_event_name"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.Unmarshal(raw, &event); err != nil || event.Event == "" {
 		return nil
@@ -118,10 +145,16 @@ func runHookStatus(stdin io.Reader, engine, target string, port int, keyDir stri
 		return nil
 	}
 
-	body, err := json.Marshal(map[string]string{
+	invocation := event.SessionID
+	if len(invocation) > 64 {
+		invocation = invocation[:64]
+	}
+	body, err := json.Marshal(map[string]any{
 		"engine":          engine,
 		"hook_event_name": event.Event,
 		"target":          target,
+		"invocation":      invocation,
+		"seq":             time.Now().UnixNano(),
 	})
 	if err != nil {
 		return nil

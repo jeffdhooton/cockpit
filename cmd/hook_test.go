@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/daemon"
+	"github.com/jeffdhooton/cockpit/daemon"
 )
 
 // hookPort returns the port an httptest server is listening on, so the hook

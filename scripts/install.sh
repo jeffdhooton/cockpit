@@ -12,12 +12,17 @@
 #   COCKPIT_VERSION   pin to a specific tag (default: latest)
 #   INSTALL_DIR       where to drop the binary (default: ~/.local/bin)
 #   COCKPIT_REPO      override the GitHub repo (default: jeffdhooton/cockpit)
+#   COCKPIT_RELEASE_URL  base URL holding the release archives and checksum
+#                     file (default: the GitHub release for COCKPIT_VERSION).
+#                     Used to verify candidate artifacts before they are
+#                     published; requires COCKPIT_VERSION.
 
 set -eu
 
 REPO="${COCKPIT_REPO:-jeffdhooton/cockpit}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${COCKPIT_VERSION:-}"
+RELEASE_URL="${COCKPIT_RELEASE_URL:-}"
 
 info()  { printf '\033[1;34mcockpit:\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33mcockpit:\033[0m %s\n' "$*" >&2; }
@@ -44,6 +49,10 @@ info "detected platform: ${os}_${arch}"
 
 # ---------- resolve version ----------
 
+if [ -n "$RELEASE_URL" ] && [ -z "$VERSION" ]; then
+  fail "COCKPIT_RELEASE_URL needs COCKPIT_VERSION to name the archive"
+fi
+
 if [ -z "$VERSION" ]; then
   info "looking up latest release..."
   if ! VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
@@ -61,7 +70,8 @@ info "installing cockpit ${VERSION}"
 # Strip leading 'v' for the archive name template: cockpit_0.1.0_darwin_arm64.tar.gz
 version_no_v=${VERSION#v}
 archive="cockpit_${version_no_v}_${os}_${arch}.tar.gz"
-url="https://github.com/${REPO}/releases/download/${VERSION}/${archive}"
+base="${RELEASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
+url="${base}/${archive}"
 
 # ---------- download + extract ----------
 
@@ -75,7 +85,7 @@ fi
 
 # Fetch and verify the checksum.
 checksum_file="cockpit_${version_no_v}_checksums.txt"
-checksum_url="https://github.com/${REPO}/releases/download/${VERSION}/${checksum_file}"
+checksum_url="${base}/${checksum_file}"
 if curl -fsSL -o "${tmpdir}/${checksum_file}" "$checksum_url" 2>/dev/null; then
   expected=$(grep " ${archive}$" "${tmpdir}/${checksum_file}" | awk '{print $1}')
   if [ -n "$expected" ]; then
@@ -130,7 +140,13 @@ Next steps:
   1. Verify the install:
        cockpit version
 
-  2. Run it:
+  2. Create a config (pick projects interactively, or write the template):
+       cockpit init --interactive
+
+  3. Check the installation:
+       cockpit doctor
+
+  4. Run it:
        cockpit
 
 Full docs: https://github.com/${REPO}

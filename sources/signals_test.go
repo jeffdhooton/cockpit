@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 func TestComputeSignalsStaleSession(t *testing.T) {
