@@ -1,0 +1,41 @@
+outcomes:
+  - outcome: 1
+    already_true: false
+    checks:
+      - name: read-and-refresh-the-fleet-with-visible-failures
+        run: sh docs/goals/spine-card/checks/run.sh source
+  - outcome: 2
+    already_true: false
+    checks:
+      - name: desktop-and-mobile-spine-tile
+        run: sh docs/goals/spine-card/checks/run.sh tile
+  - outcome: 3
+    already_true: false
+    checks:
+      - name: fleet-preview-and-empty-sections
+        run: sh docs/goals/spine-card/checks/run.sh preview
+  - outcome: 4
+    already_true: false
+    checks:
+      - name: every-ask-in-the-attention-queue
+        run: sh docs/goals/spine-card/checks/run.sh attention
+  - outcome: 5
+    already_true: false
+    checks:
+      - name: enter-reuses-or-creates-the-spine-console
+        run: sh docs/goals/spine-card/checks/run.sh enter
+  - outcome: 6
+    already_true: false
+    checks:
+      - name: doctor-reports-spine-and-the-next-action
+        run: sh docs/goals/spine-card/checks/run.sh doctor
+  - outcome: 7
+    already_true: true
+    reason: >-
+      The returned check review confirms that go-build-vet-and-test already
+      passes on main. Keep it as a regression gate. Build and vet also pass
+      in this sandbox; the full test suite cannot be verified here because
+      existing tests cannot bind their loopback HTTP listeners.
+    checks:
+      - name: go-build-vet-and-test
+        run: sh docs/goals/spine-card/checks/run.sh quality
