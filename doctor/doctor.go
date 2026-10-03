@@ -203,6 +203,8 @@ func Run(ctx context.Context, opts Options, deps Deps) (rep Report) {
 	c.checkGitHub()
 	c.checkObsidian()
 	c.checkHermes()
+	c.checkSpinePath()
+	c.checkSpineSnapshot()
 	c.checkHosts()
 	return c.report
 }
@@ -1021,6 +1023,49 @@ func (c *collector) checkHermes() {
 			return Check{Status: Pass, Summary: h.Label + ": gateway running (" + strings.Join(st.Platforms, " ") + ")"}
 		})
 	}
+}
+
+func (c *collector) checkSpinePath() {
+	c.timed("spine.path", "local", false, SimpleBudget, func(ctx context.Context) Check {
+		_, err := c.deps.LookPath("spine")
+		if err != nil {
+			return Check{Status: Warn, Summary: "spine not found on PATH", Remedy: "Install spine or add it to PATH."}
+		}
+		return Check{Status: Pass, Summary: "spine found on PATH"}
+	})
+}
+
+func (c *collector) checkSpineSnapshot() {
+	c.timed("spine.snapshot", "local", false, SimpleBudget, func(ctx context.Context) Check {
+		spinePath, err := c.deps.LookPath("spine")
+		if err != nil {
+			return Check{Status: Skip, Summary: "skipped: spine not found on PATH (see spine.path)"}
+		}
+		out, exit, err := c.deps.Exec(ctx, spinePath, "bearings", "--json")
+		if err != nil || exit != 0 {
+			ev := []string{}
+			if exit != 0 {
+				ev = append(ev, fmt.Sprintf("exit code %d", exit))
+			}
+			if err != nil {
+				ev = append(ev, err.Error())
+			}
+			return Check{Status: Warn, Summary: "spine bearings --json failed", Evidence: ev, Remedy: "Run spine bearings --json to see the error."}
+		}
+		var bearings struct {
+			NeedsYou    json.RawMessage `json:"needs_you"`
+			Underway    json.RawMessage `json:"underway"`
+			ChartedNext json.RawMessage `json:"charted_next"`
+			Landed      json.RawMessage `json:"landed"`
+		}
+		if err := json.Unmarshal([]byte(out), &bearings); err != nil {
+			return Check{Status: Warn, Summary: "spine bearings output is not valid JSON", Evidence: []string{err.Error()}, Remedy: "Run spine bearings --json to see the error."}
+		}
+		if bearings.NeedsYou == nil || bearings.Underway == nil || bearings.ChartedNext == nil || bearings.Landed == nil {
+			return Check{Status: Warn, Summary: "spine bearings missing required fields", Evidence: []string{"check needs_you, underway, charted_next, landed"}, Remedy: "Run spine bearings --json to verify the snapshot."}
+		}
+		return Check{Status: Pass, Summary: "spine bearings readable"}
+	})
 }
 
 func plural(n int, noun string) string {
