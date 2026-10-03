@@ -515,3 +515,24 @@ func TestHermesHostMustBeDeclared(t *testing.T) {
 		t.Errorf("host = %q, want mini", cfg.Hermes[0].Host)
 	}
 }
+
+func TestSpineSessionCommand(t *testing.T) {
+	dir := t.TempDir()
+	load := func(extra string) *Config {
+		p := filepath.Join(dir, "c.toml")
+		if err := os.WriteFile(p, []byte(extra), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	if got := load("").Spine.SessionCommand(); got != `spine tui || spine bearings; exec "$SHELL"` {
+		t.Errorf("default = %q", got)
+	}
+	if got := load("[spine]\ncommand = \"htop\"\n").Spine.SessionCommand(); got != "htop" {
+		t.Errorf("override = %q", got)
+	}
+}

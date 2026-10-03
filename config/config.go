@@ -31,6 +31,7 @@ type Config struct {
 	Daemon   DaemonConfig   `toml:"daemon"`
 	Hosts    []HostConfig   `toml:"hosts"`
 	Hermes   []HermesConfig `toml:"hermes"`
+	Spine    SpineConfig    `toml:"spine"`
 }
 
 type GeneralConfig struct {
@@ -96,6 +97,24 @@ type HermesConfig struct {
 	URL             string `toml:"url"`
 	Host            string `toml:"host"`
 	RefreshInterval int    `toml:"refresh_interval"`
+}
+
+// DefaultSpineCommand runs spine's TUI, falls back to its text bearings when
+// that fails, then leaves a shell so the session outlives both.
+const DefaultSpineCommand = `spine tui || spine bearings; exec "$SHELL"`
+
+// SpineConfig is the [spine] section. Command is the shell string the
+// "spine" tmux session runs; empty means DefaultSpineCommand.
+type SpineConfig struct {
+	Command string `toml:"command"`
+}
+
+// SessionCommand is the shell command for the spine session.
+func (s SpineConfig) SessionCommand() string {
+	if strings.TrimSpace(s.Command) == "" {
+		return DefaultSpineCommand
+	}
+	return s.Command
 }
 
 // Host looks up a declared host by name.
