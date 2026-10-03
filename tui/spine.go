@@ -18,6 +18,10 @@ import (
 // switch to. A local session of this name is folded into the spine tile.
 const spineSession = "spine"
 
+// spineCursor is the grid cursor's name for the spine tile. No label holds a
+// NUL, so a repo or session called spine never lands on the fleet tile.
+const spineCursor = "\x00spine"
+
 // spineDataMsg carries one read of `spine bearings --json`.
 type spineDataMsg struct {
 	Status sources.SpineStatus
@@ -88,7 +92,7 @@ func spineTileLines(st *sources.SpineStatus, inner int) (string, string) {
 		reason := "no snapshot"
 		if st.Err != nil {
 			// The tile already names spine; keep the cells for the why.
-			reason = strings.TrimPrefix(st.Err.Error(), "spine bearings ")
+			reason = clean(strings.TrimPrefix(st.Err.Error(), "spine bearings "))
 		}
 		return WarningText.Render("⚠ " + Truncate("unreadable", inner-2)), MutedText.Render(clip(reason, inner))
 	}
@@ -120,7 +124,7 @@ func spinePreview(st *sources.SpineStatus, now time.Time, width int) string {
 	if !st.Readable() {
 		reason := "no snapshot"
 		if st.Err != nil {
-			reason = st.Err.Error()
+			reason = clean(st.Err.Error())
 		}
 		return WarningText.Render(clip("⚠ spine unreadable: "+reason, width))
 	}
@@ -138,7 +142,7 @@ func spinePreview(st *sources.SpineStatus, now time.Time, width int) string {
 		for _, it := range items {
 			lines = append(lines, "  "+clip(spineItemLine(it), width-2))
 			if now && it.Now != "" {
-				lines = append(lines, "    "+MutedText.Render(clip("Now: "+it.Now, width-4)))
+				lines = append(lines, "    "+MutedText.Render(clip("Now: "+clean(it.Now), width-4)))
 			}
 		}
 	}
@@ -155,7 +159,7 @@ func spinePreview(st *sources.SpineStatus, now time.Time, width int) string {
 	if len(snap.Errors) > 0 {
 		lines = append(lines, "")
 		for _, e := range snap.Errors {
-			lines = append(lines, WarningText.Render(clip("⚠ "+e, width)))
+			lines = append(lines, WarningText.Render(clip("⚠ "+clean(e), width)))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -163,14 +167,14 @@ func spinePreview(st *sources.SpineStatus, now time.Time, width int) string {
 
 // spineItemLine names an item's repository, goal and stream before its title.
 func spineItemLine(it sources.SpineItem) string {
-	where := it.Repo
+	where := clean(it.Repo)
 	if it.Goal != "" {
-		where += "/" + it.Goal
+		where += "/" + clean(it.Goal)
 	}
 	if it.Stream != "" {
-		where += " " + it.Stream
+		where += " " + clean(it.Stream)
 	}
-	line := AccentText.Render(where) + " · " + it.Title
+	line := AccentText.Render(where) + " · " + clean(it.Title)
 	if it.Kind == "goal" && it.Cap > 0 {
 		line += MutedText.Render(" " + money(it.Spent) + "/" + money(it.Cap))
 	}

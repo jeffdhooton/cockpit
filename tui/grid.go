@@ -291,13 +291,22 @@ func MoveGridCursor(idx, count, cols, dx, dy int) int {
 	return idx
 }
 
+// cursorID is what the grid cursor remembers a tile by: its label, except
+// the spine tile, whose label a configured repo named spine would share.
+func (t Target) cursorID() string {
+	if t.Spine != nil {
+		return spineCursor
+	}
+	return t.Label
+}
+
 // resolveGridCursor turns the stored cursor label into an index. When the label
 // is gone — session died, repo dropped from config — it clamps the previous
 // index into range so the selection lands on a neighbour instead of jumping to
 // the top.
 func resolveGridCursor(targets []Target, label string, prev int) int {
 	for i := range targets {
-		if targets[i].Label == label {
+		if targets[i].cursorID() == label {
 			return i
 		}
 	}
@@ -849,7 +858,10 @@ func (m *Model) setGridCursor(targets []Target, idx int) {
 		return
 	}
 	m.gridIndex = idx
-	m.gridCursor = targets[idx].Label
+	m.gridCursor = targets[idx].cursorID()
+	if targets[idx].Spine != nil {
+		return
+	}
 	for i, s := range m.sessions.Sessions {
 		if s.Name == targets[idx].Label {
 			m.sessions.Cursor = i

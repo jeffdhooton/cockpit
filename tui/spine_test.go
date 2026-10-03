@@ -210,3 +210,57 @@ func TestMoney(t *testing.T) {
 		}
 	}
 }
+
+func TestSpineTileCursorDoesNotCollideWithARepoNamedSpine(t *testing.T) {
+	m := spineModel(t, 120, spineFixture(t))
+	m.repos.Repos = append(m.repos.Repos, repo("spine"))
+	targets := m.gridTargets()
+	fleet := spineIndex(t, targets)
+	repoAt := -1
+	for i, tg := range targets {
+		if tg.Label == "spine" && tg.Spine == nil {
+			repoAt = i
+		}
+	}
+	if repoAt < 0 {
+		t.Fatalf("the spine repo needs its own tile: %v", labels(targets))
+	}
+
+	m.setGridCursor(targets, repoAt)
+	if got := resolveGridCursor(m.gridTargets(), m.gridCursor, m.gridIndex); got != repoAt {
+		t.Errorf("selecting the spine repo resolved to %d, want %d", got, repoAt)
+	}
+	if sel, _ := m.gridSelected(); sel.Spine != nil {
+		t.Error("the spine repo selected the fleet tile")
+	}
+
+	m.setGridCursor(targets, fleet)
+	if got := resolveGridCursor(m.gridTargets(), m.gridCursor, m.gridIndex); got != fleet {
+		t.Errorf("selecting the fleet resolved to %d, want %d", got, fleet)
+	}
+	// A repo tile appearing ahead of it must not steal the selection.
+	m.repos.Repos = append([]sources.GitRepoStatus{repo("aaa")}, m.repos.Repos...)
+	if sel, _ := m.gridSelected(); sel.Spine == nil {
+		t.Errorf("the fleet selection moved to %q", sel.Label)
+	}
+}
+
+func TestSpinePreviewStripsControlSequences(t *testing.T) {
+	esc := "\x1b]0;pwned\x07\x1b[2J"
+	st := sources.SpineStatus{Snapshot: &sources.SpineSnapshot{
+		NeedsYou: []sources.SpineItem{{Repo: "shop" + esc, Goal: "g" + esc, Stream: "s" + esc, Title: "ask" + esc}},
+		Underway: []sources.SpineItem{{Repo: "shop", Goal: "g", Kind: "goal", Title: "t", Now: "now" + esc}},
+		Errors:   []string{"notes: broken" + esc},
+	}}
+	out := spinePreview(&st, time.Now(), 200)
+	if strings.Contains(out, "pwned") || strings.Contains(out, "\x1b]") || strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x07") {
+		t.Errorf("preview passes control sequences through: %q", out)
+	}
+
+	bad := sources.SpineStatus{Err: errors.New("spine bearings: exit 1: oops" + esc)}
+	for _, s := range []string{spinePreview(&bad, time.Now(), 200), func() string { a, b := spineTileLines(&bad, 60); return a + b }()} {
+		if strings.Contains(s, "pwned") || strings.Contains(s, "\x1b]") || strings.Contains(s, "\x1b[2J") {
+			t.Errorf("unreadable reason passes control sequences through: %q", s)
+		}
+	}
+}
