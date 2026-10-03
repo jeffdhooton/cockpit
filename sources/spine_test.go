@@ -79,3 +79,15 @@ func TestSpineFailuresAreUnreadableWithReason(t *testing.T) {
 		t.Error("nil runner readable")
 	}
 }
+
+func TestParseSpineSnapshotRules(t *testing.T) {
+	if _, err := ParseSpineSnapshot(`{"needs_you":42}`); err == nil {
+		t.Error("needs_you:42 should not parse")
+	}
+	if _, err := ParseSpineSnapshot("nope"); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Errorf("err = %v", err)
+	}
+	if _, err := ParseSpineSnapshot(strings.Repeat(" ", spineOutputLimit+1)); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Errorf("err = %v", err)
+	}
+}

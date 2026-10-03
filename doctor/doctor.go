@@ -1052,17 +1052,12 @@ func (c *collector) checkSpineSnapshot() {
 			}
 			return Check{Status: Warn, Summary: "spine bearings --json failed", Evidence: ev, Remedy: "Run spine bearings --json to see the error."}
 		}
-		var bearings struct {
-			NeedsYou    json.RawMessage `json:"needs_you"`
-			Underway    json.RawMessage `json:"underway"`
-			ChartedNext json.RawMessage `json:"charted_next"`
-			Landed      json.RawMessage `json:"landed"`
+		snap, err := sources.ParseSpineSnapshot(out)
+		if err != nil {
+			return Check{Status: Warn, Summary: "spine bearings output is not readable by Cockpit", Evidence: []string{err.Error()}, Remedy: "Run spine bearings --json to see the output; upgrade spine if its output shape differs."}
 		}
-		if err := json.Unmarshal([]byte(out), &bearings); err != nil {
-			return Check{Status: Warn, Summary: "spine bearings output is not valid JSON", Evidence: []string{err.Error()}, Remedy: "Run spine bearings --json to see the error."}
-		}
-		if bearings.NeedsYou == nil || bearings.Underway == nil || bearings.ChartedNext == nil || bearings.Landed == nil {
-			return Check{Status: Warn, Summary: "spine bearings missing required fields", Evidence: []string{"check needs_you, underway, charted_next, landed"}, Remedy: "Run spine bearings --json to verify the snapshot."}
+		if snap.NeedsYou == nil || snap.Underway == nil || snap.ChartedNext == nil || snap.Landed == nil {
+			return Check{Status: Warn, Summary: "spine bearings missing required fields", Evidence: []string{"check needs_you, underway, charted_next, landed"}, Remedy: "Run spine bearings --json to verify the snapshot; upgrade spine if its output shape differs."}
 		}
 		return Check{Status: Pass, Summary: "spine bearings readable"}
 	})
