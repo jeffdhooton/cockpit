@@ -125,14 +125,24 @@ func GetSpineStatus(ctx context.Context, r SpineRunner) (st SpineStatus) {
 		}
 		return SpineStatus{Err: fmt.Errorf("spine bearings failed: %s", firstLine(err.Error()))}
 	}
+	snap, err := ParseSpineSnapshot(out)
+	if err != nil {
+		return SpineStatus{Err: err}
+	}
+	return SpineStatus{Snapshot: snap}
+}
+
+// ParseSpineSnapshot applies the rules Cockpit reads a snapshot by: the size
+// limit and the typed decode. Doctor calls it too, so the two cannot disagree.
+func ParseSpineSnapshot(out string) (*SpineSnapshot, error) {
 	if len(out) > spineOutputLimit {
-		return SpineStatus{Err: errors.New("spine bearings output too large")}
+		return nil, errors.New("spine bearings output too large")
 	}
 	var snap SpineSnapshot
 	if err := json.Unmarshal([]byte(out), &snap); err != nil {
-		return SpineStatus{Err: fmt.Errorf("spine bearings output is not valid JSON: %s", firstLine(err.Error()))}
+		return nil, fmt.Errorf("spine bearings output is not valid JSON: %s", firstLine(err.Error()))
 	}
-	return SpineStatus{Snapshot: &snap}
+	return &snap, nil
 }
 
 func firstLine(s string) string {

@@ -478,7 +478,7 @@ func TestSpineBearingsInvalidJSON(t *testing.T) {
 	s.execOut["/usr/bin/spine bearings --json"] = "not json"
 	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
 	ch := byID(rep)["local/spine.snapshot"]
-	if ch.Status != Warn || !strings.Contains(ch.Summary, "not valid JSON") {
+	if ch.Status != Warn || !strings.Contains(ch.Summary, "not readable") {
 		t.Errorf("spine.snapshot = %+v", ch)
 	}
 	if len(ch.Evidence) == 0 {
@@ -554,4 +554,46 @@ func TestJSONRoundTrips(t *testing.T) {
 		t.Errorf("render = %s", buf.String())
 	}
 	_ = os.Stderr
+}
+
+func spineSnapshotCheck(t *testing.T, out string) Check {
+	t.Helper()
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	s.execOut["/usr/bin/spine bearings --json"] = out
+	return byID(Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps()))["local/spine.snapshot"]
+}
+
+func TestSpineSnapshotRejectsWrongShapes(t *testing.T) {
+	cases := map[string]string{
+		"needs_you number": `{"needs_you":42,"underway":[],"charted_next":[],"landed":[]}`,
+		"item field types": `{"needs_you":[{"repo":7,"title":["x"]}],"underway":[],"charted_next":[],"landed":[]}`,
+		"spent as string":  `{"needs_you":[],"underway":[{"spent":"lots"}],"charted_next":[],"landed":[]}`,
+	}
+	for name, out := range cases {
+		t.Run(name, func(t *testing.T) {
+			ch := spineSnapshotCheck(t, out)
+			if ch.Status != Warn {
+				t.Fatalf("status = %v, want Warn: %+v", ch.Status, ch)
+			}
+			if len(ch.Evidence) == 0 {
+				t.Errorf("no parse error in evidence")
+			}
+			if !strings.Contains(ch.Remedy, "spine bearings --json") {
+				t.Errorf("remedy = %q", ch.Remedy)
+			}
+		})
+	}
+}
+
+func TestSpineSnapshotFixtureStillPasses(t *testing.T) {
+	b, err := os.ReadFile("../testdata/spine/bearings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch := spineSnapshotCheck(t, string(b)); ch.Status != Pass {
+		t.Errorf("fixture = %+v", ch)
+	}
 }
