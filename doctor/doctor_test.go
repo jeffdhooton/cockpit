@@ -415,6 +415,134 @@ func TestMissingRemoteBinaryIsNamed(t *testing.T) {
 	}
 }
 
+func TestSpinePathFound(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
+	ch := byID(rep)["local/spine.path"]
+	if ch.Status != Pass || !strings.Contains(ch.Summary, "found on PATH") {
+		t.Errorf("spine.path = %+v", ch)
+	}
+}
+
+func TestSpineSnapshotReadable(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	bearingsJSON, err := os.ReadFile("../testdata/spine/bearings.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.execOut["/usr/bin/spine bearings --json"] = string(bearingsJSON)
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
+	chPath := byID(rep)["local/spine.path"]
+	chSnapshot := byID(rep)["local/spine.snapshot"]
+	if chPath.Status != Pass {
+		t.Errorf("spine.path = %+v", chPath)
+	}
+	if chSnapshot.Status != Pass || !strings.Contains(chSnapshot.Summary, "readable") {
+		t.Errorf("spine.snapshot = %+v", chSnapshot)
+	}
+	if !s.ran("/usr/bin/spine bearings --json") {
+		t.Errorf("doctor did not run spine bearings --json")
+	}
+}
+
+func TestSpineMissing(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	delete(s.lookPath, "spine")
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
+	chPath := byID(rep)["local/spine.path"]
+	chSnapshot := byID(rep)["local/spine.snapshot"]
+	if chPath.Status != Warn || !strings.Contains(chPath.Summary, "not found") {
+		t.Errorf("spine.path = %+v", chPath)
+	}
+	if !strings.Contains(chPath.Remedy, "Install") && !strings.Contains(chPath.Remedy, "PATH") {
+		t.Errorf("remedy does not suggest install or PATH: %s", chPath.Remedy)
+	}
+	if chSnapshot.Status != Skip || !strings.Contains(chSnapshot.Summary, "skipped") {
+		t.Errorf("spine.snapshot should be skipped when spine is missing: %+v", chSnapshot)
+	}
+}
+
+func TestSpineBearingsInvalidJSON(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	s.execOut["/usr/bin/spine bearings --json"] = "not json"
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
+	ch := byID(rep)["local/spine.snapshot"]
+	if ch.Status != Warn || !strings.Contains(ch.Summary, "not valid JSON") {
+		t.Errorf("spine.snapshot = %+v", ch)
+	}
+	if len(ch.Evidence) == 0 {
+		t.Errorf("no error evidence for invalid JSON")
+	}
+	if !strings.Contains(ch.Remedy, "spine bearings --json") {
+		t.Errorf("remedy should suggest spine bearings --json: %s", ch.Remedy)
+	}
+}
+
+func TestSpineBearingsExecError(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	s.execErr["/usr/bin/spine bearings --json"] = errors.New("permission denied")
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
+	ch := byID(rep)["local/spine.snapshot"]
+	if ch.Status != Warn || !strings.Contains(ch.Summary, "failed") {
+		t.Errorf("spine.snapshot = %+v", ch)
+	}
+	if len(ch.Evidence) == 0 || !strings.Contains(strings.Join(ch.Evidence, " "), "permission") {
+		t.Errorf("error not captured in evidence: %v", ch.Evidence)
+	}
+}
+
+func TestSpineBearingsNonZeroExit(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	deps := s.deps()
+	deps.Exec = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if strings.Join(args, " ") == "bearings --json" {
+			return "", 1, nil
+		}
+		return s.exec(ctx, name, args...)
+	}
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, deps)
+	ch := byID(rep)["local/spine.snapshot"]
+	if ch.Status != Warn || !strings.Contains(ch.Summary, "failed") {
+		t.Errorf("spine.snapshot = %+v", ch)
+	}
+	if !strings.Contains(strings.Join(ch.Evidence, " "), "exit code 1") {
+		t.Errorf("exit code not reported in evidence: %v", ch.Evidence)
+	}
+}
+
+func TestSpineBearingsMissingFields(t *testing.T) {
+	s := newSpy()
+	s.files["/c.toml"] = minimalConfig
+	s.execErr["/usr/bin/tmux list-sessions"] = errors.New("no server running")
+	s.lookPath["spine"] = "/usr/bin/spine"
+	bearingsJSON := `{"needs_you":[]}`
+	s.execOut["/usr/bin/spine bearings --json"] = bearingsJSON
+	rep := Run(context.Background(), Options{ConfigPath: "/c.toml"}, s.deps())
+	ch := byID(rep)["local/spine.snapshot"]
+	if ch.Status != Warn || !strings.Contains(ch.Summary, "missing required fields") {
+		t.Errorf("spine.snapshot = %+v", ch)
+	}
+	if !strings.Contains(ch.Remedy, "spine bearings --json") {
+		t.Errorf("remedy should suggest spine bearings --json: %s", ch.Remedy)
+	}
+}
 func TestJSONRoundTrips(t *testing.T) {
 	s := newSpy()
 	s.files["/c.toml"] = minimalConfig
