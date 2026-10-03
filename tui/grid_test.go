@@ -1128,7 +1128,7 @@ func TestGridDigitKeyNeverEntersADormantRepo(t *testing.T) {
 }
 
 func TestGridKeyhintsMentionTheDigits(t *testing.T) {
-	if got := GridKeyhintsView(120, false, "Attention 0"); !strings.Contains(got, "1-0") {
+	if got := GridKeyhintsView(120, false, "Attention 0", false); !strings.Contains(got, "1-0") {
 		t.Errorf("the grid hint bar should advertise the digit jumps, got:\n%s", got)
 	}
 }
@@ -1385,10 +1385,10 @@ func TestPreviewStillFollowsALocalSelection(t *testing.T) {
 }
 
 func TestGridKeyhintsOfferBackOnlyInsideAHost(t *testing.T) {
-	if got := GridKeyhintsView(120, false, "Attention 0"); strings.Contains(got, "back") {
+	if got := GridKeyhintsView(120, false, "Attention 0", false); strings.Contains(got, "back") {
 		t.Errorf("there is nowhere to go back to from the root, got:\n%s", got)
 	}
-	if got := GridKeyhintsView(120, true, "Attention 0"); !strings.Contains(got, "back") {
+	if got := GridKeyhintsView(120, true, "Attention 0", false); !strings.Contains(got, "back") {
 		t.Errorf("inside a host the hint bar should advertise backspace, got:\n%s", got)
 	}
 }

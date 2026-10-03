@@ -117,19 +117,82 @@ func plural(n int, word string) string {
 }
 
 // spinePreview renders the snapshot's four sections for the preview panel in
-// at most maxLines lines (maxLines <= 0 means no limit). When the full layout
-// does not fit, every section keeps its heading and the items share whatever
-// rows are left, so no section is ever clipped out of sight.
-func spinePreview(st *sources.SpineStatus, now time.Time, width, maxLines int) string {
+// at most maxLines lines (maxLines <= 0 means no limit), scrolled down by
+// offset lines. When the full layout does not fit, the first line summarises
+// every section and its count, a window of the full layout follows, and the
+// last line says how much is above and below and which keys scroll.
+func spinePreview(st *sources.SpineStatus, now time.Time, width, maxLines, offset int) string {
+	sections, errs, ok := spineSections(st, now, width)
+	if !ok {
+		return spineUnread(st, width)
+	}
+	full := spineFullPreview(sections, errs, width)
+	if maxLines <= 0 || len(full) <= maxLines {
+		return strings.Join(full, "\n")
+	}
+	summary := clip(spineSummary(sections), width)
+	if maxLines < 3 {
+		return summary
+	}
+	rows := maxLines - 2
+	offset = clampScroll(offset, len(full), rows)
+	var more []string
+	if offset > 0 {
+		more = append(more, fmt.Sprintf("↑ %d above", offset))
+	}
+	if below := len(full) - offset - rows; below > 0 {
+		more = append(more, fmt.Sprintf("↓ %d more", below))
+	}
+	more = append(more, "J/K scroll")
+	lines := []string{MutedText.Render(summary)}
+	lines = append(lines, full[offset:offset+rows]...)
+	lines = append(lines, MutedText.Render(clip(strings.Join(more, " · "), width)))
+	return strings.Join(lines, "\n")
+}
+
+// spineMaxScroll is the furthest spinePreview can scroll in maxLines lines:
+// zero when everything fits.
+func spineMaxScroll(st *sources.SpineStatus, now time.Time, width, maxLines int) int {
+	sections, errs, ok := spineSections(st, now, width)
+	if !ok || maxLines < 3 {
+		return 0
+	}
+	n := len(spineFullPreview(sections, errs, width))
+	if n <= maxLines {
+		return 0
+	}
+	return n - (maxLines - 2)
+}
+
+// spineLineCount is how many lines the full, unscrolled layout takes.
+func spineLineCount(st *sources.SpineStatus, now time.Time, width int) int {
+	sections, errs, ok := spineSections(st, now, width)
+	if !ok {
+		return 0
+	}
+	return len(spineFullPreview(sections, errs, width))
+}
+
+func clampScroll(offset, total, rows int) int {
+	return max(0, min(offset, total-rows))
+}
+
+func spineUnread(st *sources.SpineStatus, width int) string {
 	if st == nil || (st.Snapshot == nil && st.Err == nil) {
 		return MutedText.Render("reading spine bearings…")
 	}
-	if !st.Readable() {
-		reason := "no snapshot"
-		if st.Err != nil {
-			reason = clean(st.Err.Error())
-		}
-		return WarningText.Render(clip("⚠ spine unreadable: "+reason, width))
+	reason := "no snapshot"
+	if st.Err != nil {
+		reason = clean(st.Err.Error())
+	}
+	return WarningText.Render(clip("⚠ spine unreadable: "+reason, width))
+}
+
+// spineSections splits a readable snapshot into the preview's four sections
+// and its error lines; ok is false before the first read or when unreadable.
+func spineSections(st *sources.SpineStatus, now time.Time, width int) ([]spineSection, []string, bool) {
+	if st == nil || st.Snapshot == nil || !st.Readable() {
+		return nil, nil, false
 	}
 	snap := st.Snapshot
 	var landed []sources.SpineItem
@@ -148,12 +211,7 @@ func spinePreview(st *sources.SpineStatus, now time.Time, width, maxLines int) s
 	for _, e := range snap.Errors {
 		errs = append(errs, WarningText.Render(clip("⚠ "+clean(e), width)))
 	}
-
-	full := spineFullPreview(sections, errs, width)
-	if maxLines <= 0 || len(full) <= maxLines {
-		return strings.Join(full, "\n")
-	}
-	return strings.Join(spineFittedPreview(sections, errs, width, maxLines), "\n")
+	return sections, errs, true
 }
 
 type spineSection struct {
@@ -193,67 +251,17 @@ func spineFullPreview(sections []spineSection, errs []string, width int) []strin
 	return lines
 }
 
-// spineFittedPreview is the dense layout: one heading line per section that
-// carries its count (or "none"), then items handed out a row at a time across
-// the sections so a long Underway cannot starve Landed. With fewer rows than
-// sections it falls back to a single summary line naming all four.
-func spineFittedPreview(sections []spineSection, errs []string, width, maxLines int) []string {
-	if maxLines < len(sections) {
-		parts := make([]string, len(sections))
-		for i, sec := range sections {
-			parts[i] = fmt.Sprintf("%s %d", sec.title, len(sec.items))
-			if len(sec.items) == 0 {
-				parts[i] = sec.title + " none"
-			}
-		}
-		return []string{clip(strings.Join(parts, " · "), width)}
-	}
-
-	left := maxLines - len(sections)
-	shown := make([][]string, len(sections))
-	counts := make([]int, len(sections))
-	for progressed := true; progressed && left > 0; {
-		progressed = false
-		for i, sec := range sections {
-			if counts[i] >= len(sec.items) {
-				continue
-			}
-			l := sec.lines(sec.items[counts[i]], width)
-			if len(l) > left {
-				l = l[:1] // the item row alone still fits; its Now line does not
-			}
-			if len(l) > left {
-				continue
-			}
-			shown[i] = append(shown[i], l...)
-			counts[i]++
-			left -= len(l)
-			progressed = true
-		}
-	}
-
-	var lines []string
+// spineSummary names every section with its count, or none, on one line, so
+// a scrolled window never leaves a section out of mind.
+func spineSummary(sections []spineSection) string {
+	parts := make([]string, len(sections))
 	for i, sec := range sections {
-		head := BoldText.Render(sec.title)
-		switch n := len(sec.items); {
-		case n == 0:
-			head += "  " + MutedText.Render("none")
-		case counts[i] < n:
-			head += MutedText.Render(fmt.Sprintf(" (%d, %d not shown)", n, n-counts[i]))
-		default:
-			head += MutedText.Render(fmt.Sprintf(" (%d)", n))
+		parts[i] = fmt.Sprintf("%s %d", sec.title, len(sec.items))
+		if len(sec.items) == 0 {
+			parts[i] = sec.title + " none"
 		}
-		lines = append(lines, head)
-		lines = append(lines, shown[i]...)
 	}
-	for _, e := range errs {
-		if left <= 0 {
-			break
-		}
-		lines = append(lines, e)
-		left--
-	}
-	return lines
+	return strings.Join(parts, " · ")
 }
 
 // spineItemLine names an item's repository, goal and stream before its title.

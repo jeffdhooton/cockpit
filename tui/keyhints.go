@@ -37,17 +37,23 @@ func SessionsKeyhintsView(width int, panes bool, badge string) string {
 // right, so the phone sees the first few and the desktop sees them all. Nested
 // is true inside a host's grid, where backspace has somewhere to go. The
 // attention badge is persistent: it is the second hint so it survives
-// truncation on a phone.
-func GridKeyhintsView(width int, nested bool, badge string) string {
+// truncation on a phone. With the spine tile selected the preview scrolls,
+// and its keys come straight after the badge.
+func GridKeyhintsView(width int, nested bool, badge string, spine bool) string {
 	hints := []hint{
 		{"hjkl", "nav"},
 		{"a", badge},
+	}
+	if spine {
+		hints = append(hints, hint{"J/K", "scroll fleet"})
+	}
+	hints = append(hints, []hint{
 		// Third, so the digits survive truncation on the phone widths they
 		// were added for.
 		{"1-0", "open"},
 		{"Enter", "jump"},
 		{"p", "procs"},
-	}
+	}...)
 	// Inside a host: the way out matters more than anything below it,
 	// and at the root the key does nothing worth advertising.
 	if nested {
