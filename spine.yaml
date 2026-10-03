@@ -1,0 +1,29 @@
+# Drafted by spine adopt --preset go. Commit it as this repository's first
+# spine.yaml; after that, changes go through spine config propose.
+mode: enforce
+# Goal work is confined by stream leases regardless. List paths here only
+# to make Jeff's own and ordinary features' edits go through spine features.
+protected: []
+checks:
+  test_cmd: "go test ./..."
+  worktree_setup: ''
+  serial: false # go's tests share nothing between checkouts
+approve:
+  ship: pr # each goal ends in a PR Jeff merges
+goals:
+  # Commands that cost real money: a goal agent runs one only with Jeff's
+  # yes for its stream. List any, as shell globs, e.g. "go run ./cmd/<one that calls a paid API>*"
+  paid_commands: []
+  # Commands that release or deploy: goal agents never run them. List
+  # any, e.g. "fly deploy*"
+  # Releases are tag pushes built by .github/workflows/release.yml.
+  deploy_commands: ["git tag*", "goreleaser*"]
+  models:
+    # Codex tiers stay off gpt-6-astra.
+    codex: {light: gpt-6-luna, standard: "gpt-6.1-sol@medium", strong: "gpt-6.1-sol@high"}
+  # Codex reports tokens only: without prices its sessions count as $0
+  # against a goal's cap. Add USD per million tokens, e.g.
+  # Standard API list prices, 2026-10-02 (developers.openai.com/api/docs/pricing).
+  prices:
+    gpt-6.1-sol: {in: 2.00, out: 10.00, cached_in: 0.10}
+    gpt-6-luna: {in: 0.10, out: 0.50, cached_in: 0.01}
