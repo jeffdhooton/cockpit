@@ -144,7 +144,7 @@ func TestSpinePreviewShowsFourSections(t *testing.T) {
 
 	m = spineModel(t, 120, sources.SpineStatus{Snapshot: &sources.SpineSnapshot{}})
 	m.setGridCursor(m.gridTargets(), 2)
-	preview := spinePreview(m.spine, m.now(), 80, 0)
+	preview := spinePreview(m.spine, m.now(), 80, 0, 0)
 	if n := strings.Count(ansi.Strip(preview), "none"); n != 4 {
 		t.Errorf("every empty section says none, got %d:\n%s", n, preview)
 	}
@@ -153,7 +153,7 @@ func TestSpinePreviewShowsFourSections(t *testing.T) {
 func TestSpinePreviewDropsOldLanded(t *testing.T) {
 	st := spineFixture(t)
 	now := time.Date(2026, 10, 4, 14, 0, 0, 0, time.UTC) // 22h50m after one, 26h30m after the other
-	out := ansi.Strip(spinePreview(&st, now, 100, 0))
+	out := ansi.Strip(spinePreview(&st, now, 100, 0, 0))
 	if !strings.Contains(out, "Address form validates postcodes") || strings.Contains(out, "rss v1") {
 		t.Errorf("landed keeps the last 24 hours only:\n%s", out)
 	}
@@ -253,64 +253,179 @@ func TestSpinePreviewStripsControlSequences(t *testing.T) {
 		Underway: []sources.SpineItem{{Repo: "shop", Goal: "g", Kind: "goal", Title: "t", Now: "now" + esc}},
 		Errors:   []string{"notes: broken" + esc},
 	}}
-	out := spinePreview(&st, time.Now(), 200, 0)
+	out := spinePreview(&st, time.Now(), 200, 0, 0)
 	if strings.Contains(out, "pwned") || strings.Contains(out, "\x1b]") || strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x07") {
 		t.Errorf("preview passes control sequences through: %q", out)
 	}
 
 	bad := sources.SpineStatus{Err: errors.New("spine bearings: exit 1: oops" + esc)}
-	for _, s := range []string{spinePreview(&bad, time.Now(), 200, 0), func() string { a, b := spineTileLines(&bad, 60); return a + b }()} {
+	for _, s := range []string{spinePreview(&bad, time.Now(), 200, 0, 0), func() string { a, b := spineTileLines(&bad, 60); return a + b }()} {
 		if strings.Contains(s, "pwned") || strings.Contains(s, "\x1b]") || strings.Contains(s, "\x1b[2J") {
 			t.Errorf("unreadable reason passes control sequences through: %q", s)
 		}
 	}
 }
 
-// At an ordinary 120x24 terminal the preview panel has a handful of rows; the
-// four sections must all still be on screen, full fleet or empty.
-func TestSpinePreviewFitsA120x24Terminal(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		st   sources.SpineStatus
-		want []string
-	}{
-		{"fixture", spineFixture(t), []string{"Needs you (1)", "Underway (", "Charted next (", "Landed (last 24h) ("}},
-		{"empty", sources.SpineStatus{Snapshot: &sources.SpineSnapshot{}}, []string{"Needs you  none", "Underway  none", "Charted next  none", "Landed (last 24h)  none"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := spineModel(t, 120, tc.st)
-			next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
-			m = next.(Model)
-			targets := m.gridTargets()
-			m.setGridCursor(targets, spineIndex(t, targets))
-			view := ansi.Strip(m.View())
-			if n := len(strings.Split(view, "\n")); n > 24 {
-				t.Errorf("view is %d rows, taller than the terminal", n)
+// spineAt120x24 is the root model at an ordinary 120x24 terminal after one
+// spine read, with the spine tile selected by walking the grid with keys.
+func spineAt120x24(t *testing.T, st sources.SpineStatus) Model {
+	t.Helper()
+	m := spineModel(t, 120, st)
+	m = press(t, m, tea.WindowSizeMsg{Width: 120, Height: 24})
+	for i := 0; i < 20; i++ {
+		if sel, ok := m.gridSelected(); ok && sel.Spine != nil {
+			return m
+		}
+		m = press(t, m, runes("l"))
+	}
+	t.Fatalf("the l key never reached the spine tile\n%s", ansi.Strip(m.View()))
+	return m
+}
+
+func press(t *testing.T, m Model, msg tea.Msg) Model {
+	t.Helper()
+	next, _ := m.Update(msg)
+	return next.(Model)
+}
+
+func runes(k string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)} }
+
+func viewAt120x24(t *testing.T, m Model) string {
+	t.Helper()
+	view := ansi.Strip(m.View())
+	if n := len(strings.Split(view, "\n")); n > 24 {
+		t.Fatalf("view is %d rows, taller than the terminal\n%s", n, view)
+	}
+	return view
+}
+
+// At 120x24 the preview panel has a handful of rows. Every section heading
+// stays named on its summary line, and J walks the window down until every
+// item and its Now line, the second Underway item included, has been on
+// screen; K walks back to the top.
+func TestSpinePreviewScrollsEveryItemIntoViewAt120x24(t *testing.T) {
+	m := spineAt120x24(t, spineFixture(t))
+	want := []string{
+		"Needs you", "Allow up to $5 for the sandbox payment API?",
+		"Underway", "checkout v1: one-page checkout with saved carts", "Now: payments waits on a money ask; carts merging",
+		"Saved carts survive sign-out", "Now: merging",
+		"Charted next", "search v1: full-text search over notes",
+		"Landed (last 24h)", "Address form validates postcodes", "rss v1: feeds for every tag",
+		"notes: decisions.jsonl: permission denied",
+	}
+	view := viewAt120x24(t, m)
+	if strings.Contains(view, "Saved carts survive sign-out") {
+		t.Fatalf("fixture fits at 120x24; the test no longer proves scrolling\n%s", view)
+	}
+	for _, h := range []string{"Needs you 1", "Underway 2", "Charted next 1", "Landed (last 24h) 2", "↓", "J/K scroll fleet"} {
+		if !strings.Contains(view, h) {
+			t.Errorf("top of the scroll missing %q\n%s", h, view)
+		}
+	}
+	seen := map[string]bool{}
+	var last string
+	for i := 0; i < 40 && view != last; i++ {
+		for _, w := range want {
+			if strings.Contains(view, w) {
+				seen[w] = true
 			}
-			for _, want := range tc.want {
-				if !strings.Contains(view, want) {
-					t.Errorf("preview missing %q at 120x24\n%s", want, view)
-				}
-			}
-		})
+		}
+		last = view
+		m = press(t, m, runes("J"))
+		view = viewAt120x24(t, m)
+	}
+	for _, w := range want {
+		if !seen[w] {
+			t.Errorf("scrolling never showed %q", w)
+		}
+	}
+	if strings.Contains(view, "more ·") || !strings.Contains(view, "↑") {
+		t.Errorf("the bottom must say what is above and nothing below\n%s", view)
+	}
+	// The offset is clamped: more J at the bottom changes nothing.
+	bottom := m.spineScroll
+	m = press(t, m, runes("J"))
+	if m.spineScroll != bottom {
+		t.Errorf("scrolled past the bottom: %d, then %d", bottom, m.spineScroll)
+	}
+	for i := 0; i < 40; i++ {
+		m = press(t, m, runes("K"))
+	}
+	if m.spineScroll != 0 || !strings.Contains(viewAt120x24(t, m), "Allow up to $5") {
+		t.Errorf("K must return to the top, at %d\n%s", m.spineScroll, viewAt120x24(t, m))
+	}
+	m = press(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.spineScroll == 0 {
+		t.Error("pgdown did not scroll the spine preview")
 	}
 }
 
-func TestSpineFittedPreviewSharesRowsAndSummarisesWhenTiny(t *testing.T) {
-	st := spineFixture(t)
-	now := time.Date(2026, 10, 3, 18, 0, 0, 0, time.UTC)
-	for rows := 1; rows <= 12; rows++ {
-		out := ansi.Strip(spinePreview(&st, now, 120, rows))
-		if n := len(strings.Split(out, "\n")); n > rows {
-			t.Errorf("%d rows: rendered %d lines\n%s", rows, n, out)
-		}
-		for _, want := range []string{"Needs you", "Underway", "Charted next", "Landed"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("%d rows: missing %q\n%s", rows, want, out)
-			}
+func TestSpinePreviewEmptyFleetSaysNoneInEverySectionAt120x24(t *testing.T) {
+	m := spineAt120x24(t, sources.SpineStatus{Snapshot: &sources.SpineSnapshot{}})
+	seen := strings.Builder{}
+	for i := 0; i < 20; i++ {
+		seen.WriteString(viewAt120x24(t, m))
+		m = press(t, m, runes("J"))
+	}
+	view := seen.String()
+	for _, h := range []string{"Needs you", "Underway", "Charted next", "Landed (last 24h)"} {
+		if !strings.Contains(view, h+" none") {
+			t.Errorf("summary must say %s none\n%s", h, view)
 		}
 	}
-	if out := ansi.Strip(spinePreview(&st, now, 120, 8)); !strings.Contains(out, "Allow up to $5") || !strings.Contains(out, "search v1") {
-		t.Errorf("spare rows go to every section in turn:\n%s", out)
+	if n := strings.Count(view, "  none"); n < 4 {
+		t.Errorf("each empty section must say none under its heading, saw %d\n%s", n, view)
+	}
+}
+
+func TestSpinePreviewScrollResetsOffTheTileAndWhenTheSnapshotShrinks(t *testing.T) {
+	m := spineAt120x24(t, spineFixture(t))
+	m = press(t, m, runes("J"))
+	m = press(t, m, runes("J"))
+	if m.spineScroll != 2 {
+		t.Fatalf("two J scrolled to %d", m.spineScroll)
+	}
+	m = press(t, m, runes("h"))
+	if m.spineScroll != 0 {
+		t.Errorf("leaving the spine tile kept offset %d", m.spineScroll)
+	}
+	// Off the spine tile, J and K do nothing.
+	m = press(t, m, runes("J"))
+	if m.spineScroll != 0 {
+		t.Errorf("J off the spine tile scrolled to %d", m.spineScroll)
+	}
+
+	m = press(t, m, runes("l"))
+	m = press(t, m, runes("J"))
+	m = press(t, m, runes("J"))
+	smaller := spineFixture(t)
+	smaller.Snapshot.Landed = nil
+	m = press(t, m, spineDataMsg{Status: smaller, At: m.now()})
+	if m.spineScroll != 0 {
+		t.Errorf("a shorter snapshot kept offset %d", m.spineScroll)
+	}
+}
+
+// A tall panel shows the whole layout with no summary or scroll line, so
+// what a big terminal sees is unchanged.
+func TestSpinePreviewUnscrolledWhenItFits(t *testing.T) {
+	st := spineFixture(t)
+	now := time.Date(2026, 10, 3, 18, 0, 0, 0, time.UTC)
+	out := ansi.Strip(spinePreview(&st, now, 120, 97, 5))
+	if out != ansi.Strip(spinePreview(&st, now, 120, 0, 0)) || strings.Contains(out, "scroll") {
+		t.Errorf("a panel the layout fits must show it whole:\n%s", out)
+	}
+	for rows := 1; rows <= 12; rows++ {
+		for off := 0; off <= 20; off++ {
+			got := ansi.Strip(spinePreview(&st, now, 120, rows, off))
+			if n := len(strings.Split(got, "\n")); n > rows {
+				t.Errorf("%d rows at %d: rendered %d lines\n%s", rows, off, n, got)
+			}
+			for _, h := range []string{"Needs you", "Underway", "Charted next", "Landed"} {
+				if !strings.Contains(got, h) {
+					t.Errorf("%d rows at %d: missing %q\n%s", rows, off, h, got)
+				}
+			}
+		}
 	}
 }

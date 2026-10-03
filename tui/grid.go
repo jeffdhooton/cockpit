@@ -749,7 +749,8 @@ func (m Model) gridView() string {
 	targets := m.gridTargets()
 	cursor := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
 
-	hints := GridKeyhintsView(m.width, m.gridHost != "", m.attn.badge())
+	spineSelected := cursor >= 0 && cursor < len(targets) && targets[cursor].Spine != nil
+	hints := GridKeyhintsView(m.width, m.gridHost != "", m.attn.badge(), spineSelected)
 	switch {
 	case m.mode == ModeCapture:
 		hints = "  " + AccentText.Render("capture ›") + " " + m.captureInput.View()
@@ -760,20 +761,11 @@ func (m Model) gridView() string {
 	// A phone gets the compact tile: no preview to compete with, and the rows
 	// it saves are the rows it has fewest of.
 	compact := m.width < MobileMaxWidth
-	tileH := tileHeight(compact)
 
-	body := m.height - 1 // keyhints row
-	if body < tileH {
-		body = tileH
-	}
-
-	gridH := body
+	body, gridH := m.gridHeights(compact)
 	showPreview := m.width >= MobileMaxWidth && len(targets) > 0
-	if showPreview {
-		gridH = body * 3 / 5
-		if gridH < tileH+3 {
-			gridH = tileH + 3
-		}
+	if !showPreview {
+		gridH = body
 	}
 
 	// The title carries the level, so the grid never leaves you guessing
@@ -792,6 +784,34 @@ func (m Model) gridView() string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, page, hints)
+}
+
+// gridHeights splits the rows above the key bar between the grid and, on
+// desktop widths, the preview panel below it.
+func (m Model) gridHeights(compact bool) (body, gridH int) {
+	tileH := tileHeight(compact)
+	body = max(m.height-1, tileH) // keyhints row
+	gridH = max(body*3/5, tileH+3)
+	return body, gridH
+}
+
+// spinePreviewLines is how many content lines the spine preview panel has
+// below its title: the same rows renderPreviewPanel hands spinePreview.
+func (m Model) spinePreviewLines() int {
+	body, gridH := m.gridHeights(m.width < MobileMaxWidth)
+	return body - gridH - 3
+}
+
+// scrollSpine moves the spine preview window by delta lines, clamped to the
+// content the panel can show.
+func (m *Model) scrollSpine(delta int) {
+	t, ok := m.gridSelected()
+	if !ok || t.Spine == nil {
+		m.spineScroll = 0
+		return
+	}
+	limit := spineMaxScroll(t.Spine, m.now(), m.width-4, m.spinePreviewLines())
+	m.spineScroll = max(0, min(m.spineScroll+delta, limit))
 }
 
 // gridLocalSession is the tmux session on this machine under the grid cursor,
@@ -825,7 +845,7 @@ func (m Model) gridSelected() (Target, bool) {
 // renderPreviewPanel renders the capture-pane output for the selected session.
 func (m Model) renderPreviewPanel(height int) string {
 	if t, ok := m.gridSelected(); ok && t.Spine != nil {
-		return RenderPanel("Spine fleet", spinePreview(t.Spine, m.now(), m.width-4, height-3), m.width, height, false)
+		return RenderPanel("Spine fleet", spinePreview(t.Spine, m.now(), m.width-4, height-3, m.spineScroll), m.width, height, false)
 	}
 	name := m.gridLocalSession()
 	if name == "" || m.sessionPreview == "" {
@@ -862,6 +882,7 @@ func (m *Model) setGridCursor(targets []Target, idx int) {
 	if targets[idx].Spine != nil {
 		return
 	}
+	m.spineScroll = 0
 	for i, s := range m.sessions.Sessions {
 		if s.Name == targets[idx].Label {
 			m.sessions.Cursor = i
@@ -934,6 +955,7 @@ func (m *Model) leaveHost() {
 	m.gridCursor = m.gridRootCursor
 	m.gridIndex = 0
 	m.gridRootCursor = ""
+	m.spineScroll = 0
 }
 
 // enterHotkey jumps to the target carrying a digit, taking the selection with
@@ -1042,6 +1064,20 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 		return move(0, 1)
 	case "enter":
 		return m.enterTarget(targets, idx)
+	case "J", "pgdown":
+		step := 1
+		if msg.String() == "pgdown" {
+			step = max(1, m.spinePreviewLines()-2)
+		}
+		m.scrollSpine(step)
+		return nil
+	case "K", "pgup":
+		step := 1
+		if msg.String() == "pgup" {
+			step = max(1, m.spinePreviewLines()-2)
+		}
+		m.scrollSpine(-step)
+		return nil
 	case "backspace":
 		// At the root there is nowhere above to go, so this is a no-op
 		// rather than an exit: backspace should never quit anything.

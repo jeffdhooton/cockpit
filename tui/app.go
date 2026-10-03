@@ -72,6 +72,7 @@ type Model struct {
 	hermesAt       time.Time
 	spine          *sources.SpineStatus // last spine bearings read; nil before the first
 	spineAt        time.Time
+	spineScroll    int    // lines the spine preview is scrolled down; 0 off the spine tile
 	sessionPreview string // the grid's preview of the selected local session
 
 	// Local host observation beyond the session list: pane records, the
@@ -328,6 +329,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spineDataMsg:
 		st := msg.Status
+		// A shorter snapshot starts again from the top rather than leaving
+		// the window parked past what is left.
+		if spineLineCount(&st, m.now(), m.width-4) < spineLineCount(m.spine, m.now(), m.width-4) {
+			m.spineScroll = 0
+		}
 		m.spine = &st
 		m.spineAt = msg.At
 		cmds = append(cmds, m.recomputeAttention())
