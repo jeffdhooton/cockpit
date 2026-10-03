@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 	"github.com/spf13/cobra"
 )
 

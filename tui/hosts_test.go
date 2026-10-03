@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 func TestBackoffStepsAndCaps(t *testing.T) {
@@ -69,7 +69,14 @@ func TestGridTargetsIncludeRemoteHosts(t *testing.T) {
 	targets := m.gridTargets()
 	keys := labels(targets)
 	if len(targets) != 3 {
-		t.Fatalf("want local + remote session + remote dormant repo, got %v", keys)
+		t.Fatalf("the root wants the local session, the spine tile and one box for mini, got %v", keys)
+	}
+
+	// The host's own tiles are one level down, inside its box.
+	m.openHost("mini")
+	targets = m.gridTargets()
+	if len(targets) != 2 {
+		t.Fatalf("want mini's session and its dormant repo, got %v", labels(targets))
 	}
 	var remote Target
 	for _, tg := range targets {

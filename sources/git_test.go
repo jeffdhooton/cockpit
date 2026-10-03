@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 func TestParsePortelainCount(t *testing.T) {

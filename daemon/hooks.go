@@ -4,10 +4,10 @@ import (
 	"crypto/hmac"
 	"encoding/json"
 	"net/http"
-	"strings"
+	"sync"
 	"time"
 
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 // maxStatusBytes bounds a hook payload. Claude's Stop event can carry an
@@ -56,17 +56,30 @@ func stateFor(engine, event string) (sources.AgentStatus, bool) {
 // statusPayload is the allowlist. Anything absent from this struct is dropped
 // rather than forwarded, which is the whole point: only enough to colour a
 // tile ever reaches a tmux option.
+//
+// Invocation is the agent run that sent the report — the engine's own
+// session id, which both engines put on every event — and Seq is the hook's
+// clock when it sent it. Together they let a late report from an exited run
+// be refused rather than recolour its replacement.
 type statusPayload struct {
-	Engine string `json:"engine"`
-	Event  string `json:"hook_event_name"`
-	Target string `json:"target"`
+	Engine     string `json:"engine"`
+	Event      string `json:"hook_event_name"`
+	Target     string `json:"target"`
+	Invocation string `json:"invocation"`
+	Seq        int64  `json:"seq"`
 }
 
 const (
-	maxEngineLen = 16
-	maxEventLen  = 32
-	maxTargetLen = 128
+	maxEngineLen     = 16
+	maxEventLen      = 32
+	maxTargetLen     = 128
+	maxInvocationLen = 64
 )
+
+// statusMu serialises the read-then-write of a pane's record. The daemon is
+// the only writer on its server, so a process mutex is the right scope here;
+// project lifecycle uses the tmux-side lock because it has many writers.
+var statusMu sync.Mutex
 
 func (s *Server) serveStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("mcp-session-id", s.SessionID)
@@ -94,6 +107,7 @@ func (s *Server) serveStatus(w http.ResponseWriter, r *http.Request) {
 	engine := clip(p.Engine, maxEngineLen)
 	event := clip(p.Event, maxEventLen)
 	target := clip(p.Target, maxTargetLen)
+	invocation := clip(p.Invocation, maxInvocationLen)
 	if target == "" {
 		http.Error(w, "target required", http.StatusBadRequest)
 		return
@@ -116,9 +130,57 @@ func (s *Server) serveStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, window, _ := strings.Cut(target, ":")
-	if _, err := s.Runner.Run(r.Context(),
-		sources.SetStatusArgs(session, st, window, time.Now())...); err != nil {
+	now := time.Now()
+	t := sources.ParseStatusTarget(target)
+	if t.Legacy {
+		if _, err := s.Runner.Run(r.Context(),
+			sources.SetStatusArgs(t.Session, st, t.Window, now)...); err != nil {
+			http.Error(w, "could not record status", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	statusMu.Lock()
+	defer statusMu.Unlock()
+
+	// Bind the report to the live pane. A pane that is gone, or whose id now
+	// belongs to a different server generation, session or window, is a
+	// replacement: the report is for something that no longer exists.
+	out, err := s.Runner.Run(r.Context(), sources.FindPaneArgs(t.PaneID)...)
+	if err != nil {
+		if sources.IsVerifiedAbsence(err) {
+			http.Error(w, "target is gone", http.StatusConflict)
+			return
+		}
+		http.Error(w, "could not read target", http.StatusInternalServerError)
+		return
+	}
+	panes := sources.ParsePaneReports(out, "", nil, now)
+	if len(panes) != 1 {
+		http.Error(w, "target is gone", http.StatusConflict)
+		return
+	}
+	live := panes[0]
+	if live.Generation != t.Generation || live.SessionID != t.SessionID || live.WindowID != t.WindowID {
+		http.Error(w, "target was replaced", http.StatusConflict)
+		return
+	}
+	// A report older than the one already recorded is late. It is dropped
+	// whether it comes from the same run out of order or from an earlier
+	// run that has since been replaced.
+	if p.Seq != 0 && live.Seq > p.Seq {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// The pane record is authoritative for new readers; the session-level
+	// record keeps older cockpit binaries reading something.
+	args := sources.SetPaneStatusArgs(t.PaneID, st, invocation, p.Seq, now)
+	args = append(args, ";")
+	args = append(args, sources.SetStatusArgs(t.SessionID, st, live.WindowName, now)...)
+	if _, err := s.Runner.Run(r.Context(), args...); err != nil {
 		http.Error(w, "could not record status", http.StatusInternalServerError)
 		return
 	}

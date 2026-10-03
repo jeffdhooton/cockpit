@@ -1,7 +1,9 @@
 package sources
 
 import (
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -96,4 +98,40 @@ func statusFromName(s string) (AgentStatus, bool) {
 	default:
 		return AgentStatusUnknown, false
 	}
+}
+
+// StatusTarget is where a hook report lands. The pane form carries the
+// identities a report must be bound to; the legacy form is a session and
+// window name, which any hook in the session may overwrite.
+type StatusTarget struct {
+	Legacy     bool
+	Session    string // legacy: session name
+	Window     string // legacy: window name
+	Generation string
+	SessionID  string
+	WindowID   string
+	PaneID     string
+}
+
+var (
+	sessionIDPattern = regexp.MustCompile(`^\$[0-9]+$`)
+	windowIDPattern  = regexp.MustCompile(`^@[0-9]+$`)
+	paneIDPattern    = regexp.MustCompile(`^%[0-9]+$`)
+)
+
+// PaneStatusTarget renders the pane form: pane:<generation>:<$sid>:<@wid>:<%pid>.
+func PaneStatusTarget(generation, sessionID, windowID, paneID string) string {
+	return "pane:" + generation + ":" + sessionID + ":" + windowID + ":" + paneID
+}
+
+// ParseStatusTarget reads either form. A string that is not a well-formed
+// pane target is a legacy one.
+func ParseStatusTarget(s string) StatusTarget {
+	parts := strings.Split(s, ":")
+	if len(parts) == 5 && parts[0] == "pane" && parts[1] != "" &&
+		sessionIDPattern.MatchString(parts[2]) && windowIDPattern.MatchString(parts[3]) && paneIDPattern.MatchString(parts[4]) {
+		return StatusTarget{Generation: parts[1], SessionID: parts[2], WindowID: parts[3], PaneID: parts[4]}
+	}
+	session, window, _ := strings.Cut(s, ":")
+	return StatusTarget{Legacy: true, Session: session, Window: window}
 }

@@ -6,58 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
-
-func TestCalculateLayoutFloors(t *testing.T) {
-	// All sizes should meet minimum floors and sum to height
-	for _, h := range []int{20, 26, 35, 45, 60, 80} {
-		l := CalculateLayout(100, h, 3)
-		if l.SessionsH < 8 {
-			t.Errorf("height=%d: SessionsH = %d, want >= 8", h, l.SessionsH)
-		}
-		if l.MiddleH < 6 {
-			t.Errorf("height=%d: MiddleH = %d, want >= 6", h, l.MiddleH)
-		}
-		if l.BottomH < 3 {
-			t.Errorf("height=%d: BottomH = %d, want >= 3", h, l.BottomH)
-		}
-		if l.KeyhintsH != 1 {
-			t.Errorf("height=%d: KeyhintsH = %d, want 1", h, l.KeyhintsH)
-		}
-		total := l.SessionsH + l.MiddleH + l.BottomH + l.KeyhintsH
-		if total != h {
-			t.Errorf("height=%d: sections sum to %d (sessions=%d middle=%d bottom=%d keyhints=%d)",
-				h, total, l.SessionsH, l.MiddleH, l.BottomH, l.KeyhintsH)
-		}
-	}
-}
-
-func TestCalculateLayoutScaling(t *testing.T) {
-	// Bigger terminals should give sessions more space
-	small := CalculateLayout(100, 45, 3)
-	big := CalculateLayout(100, 80, 3)
-	if big.SessionsH <= small.SessionsH {
-		t.Errorf("bigger terminal should have larger sessions: small=%d big=%d", small.SessionsH, big.SessionsH)
-	}
-}
-
-func TestCalculateLayoutWidth(t *testing.T) {
-	l := CalculateLayout(100, 40, 3)
-	if l.LeftW != 50 {
-		t.Errorf("LeftW = %d, want 50", l.LeftW)
-	}
-	if l.RightW != 50 {
-		t.Errorf("RightW = %d, want 50", l.RightW)
-	}
-}
-
-func TestCalculateLayoutWidthOdd(t *testing.T) {
-	l := CalculateLayout(101, 40, 3)
-	if l.LeftW+l.RightW != 101 {
-		t.Errorf("LeftW(%d) + RightW(%d) = %d, want 101", l.LeftW, l.RightW, l.LeftW+l.RightW)
-	}
-}
 
 func TestMinimumTerminalWidth(t *testing.T) {
 	cfg := testConfig()
@@ -92,32 +42,6 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestFocusCycling(t *testing.T) {
-	cfg := testConfig()
-	m := NewModel(cfg, "/tmp/config.toml")
-	m.width = 100
-	m.height = 40
-	m.view = ViewDashboard // Tab panel cycling is a dashboard behavior
-
-	if m.focused != PanelSessions {
-		t.Errorf("default focus = %d, want PanelSessions(%d)", m.focused, PanelSessions)
-	}
-
-	// Tab cycles through all panels
-	m.handleNavKey(keyMsg("tab"))
-	if m.focused != PanelRepos {
-		t.Errorf("after 1 tab, focus = %d, want PanelRepos(%d)", m.focused, PanelRepos)
-	}
-
-	// Full cycle back to start
-	for i := 0; i < 4; i++ {
-		m.handleNavKey(keyMsg("tab"))
-	}
-	if m.focused != PanelSessions {
-		t.Errorf("after full cycle, focus = %d, want PanelSessions(%d)", m.focused, PanelSessions)
-	}
-}
-
 func TestQuitReturnsQuit(t *testing.T) {
 	cfg := testConfig()
 	m := NewModel(cfg, "/tmp/config.toml")
@@ -145,14 +69,13 @@ func TestCaptureModeEnterExit(t *testing.T) {
 	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
-	m.view = ViewDashboard // capture is a dashboard behavior
 
 	m.handleNavKey(keyMsg("c"))
 	if m.mode != ModeCapture {
 		t.Errorf("mode = %d, want ModeCapture(%d)", m.mode, ModeCapture)
 	}
-	if m.focused != PanelToday {
-		t.Errorf("focused = %d, want PanelToday(%d)", m.focused, PanelToday)
+	if !strings.Contains(m.View(), "capture") {
+		t.Error("the capture prompt should be visible")
 	}
 
 	m.handleCaptureKey(keyMsg("esc"))
@@ -166,17 +89,17 @@ func TestCaptureModeBlocksNavKeys(t *testing.T) {
 	m := NewModel(cfg, "/tmp/config.toml")
 	m.width = 100
 	m.height = 40
-	m.view = ViewDashboard // capture is a dashboard behavior
 
 	m.handleNavKey(keyMsg("c"))
 	if m.mode != ModeCapture {
 		t.Fatal("should be in capture mode")
 	}
 
-	previousFocus := m.focused
-	m.handleKey(keyMsg("tab"))
-	if m.focused != previousFocus {
-		t.Errorf("Tab changed focus in capture mode: was %d, now %d", previousFocus, m.focused)
+	if cmd := m.handleKey(keyMsg("q")); cmd != nil {
+		t.Error("q while capturing must not quit")
+	}
+	if m.view != ViewSessions {
+		t.Errorf("g while capturing must not change the view: %v", m.view)
 	}
 }
 
@@ -226,7 +149,7 @@ func keyMsg(key string) tea.KeyMsg {
 }
 
 func TestTmuxJumpRepoRejectsInvalidLabel(t *testing.T) {
-	err := tmuxJumpRepo(config.RepoConfig{Label: "my app; rm -rf /", Path: "/tmp"})
+	err := tmuxJumpRepo(nil, config.RepoConfig{Label: "my app; rm -rf /", Path: "/tmp"})
 	if err == nil {
 		t.Fatal("an unsafe label must be rejected before it reaches tmux")
 	}

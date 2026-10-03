@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // changingRunner returns each scripted output in turn, then repeats the last —
@@ -41,9 +41,9 @@ func TestWaitForSettleReturnsWhenOutputStops(t *testing.T) {
 	r := &changingRunner{outputs: []string{"", "boot", "boot ready", "boot ready", "boot ready", "boot ready"}}
 
 	ok := waitForSettle(context.Background(), r, "s:w", settleOptions{
-		Poll:     time.Millisecond,
-		Quiet:    3 * time.Millisecond,
-		Deadline: time.Second,
+		Poll:      time.Millisecond,
+		Quiet:     3 * time.Millisecond,
+		Deadline:  time.Second,
 		HeadStart: time.Millisecond,
 	})
 
@@ -87,7 +87,7 @@ func TestWaitForSettleIgnoresEmptyOutput(t *testing.T) {
 }
 
 func TestStartProcessIsANoOpWhenRunning(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|222|0\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|222|0||@1|%1|1|dev|9|9\n"}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 
 	got, err := tools.Call(context.Background(), "cockpit_start",
@@ -109,7 +109,7 @@ func TestStartProcessIsANoOpWhenRunning(t *testing.T) {
 }
 
 func TestStartProcessRespawnsADeadWindow(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|1|222|0\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|1|222|0|1|@1|%1|1|dev|9|9\n"}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 
 	if _, err := tools.Call(context.Background(), "cockpit_start",
@@ -135,7 +135,7 @@ func TestStartProcessCreatesAMissingWindow(t *testing.T) {
 }
 
 func TestStopAndRestartTools(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|222|0\n"}}
+	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|222|0||@1|%1|1|dev|9|9\n"}}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 
 	if _, err := tools.Call(context.Background(), "cockpit_stop",
@@ -146,7 +146,7 @@ func TestStopAndRestartTools(t *testing.T) {
 		t.Errorf("stop should kill the window: %v", f.calls)
 	}
 
-	g := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|222|0\n"}}
+	g := &fakeRunner{outputs: map[string]string{"list-windows": "1|dev|0|222|0||@1|%1|1|dev|9|9\n"}}
 	tools2 := testTools(t, g, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 	if _, err := tools2.Call(context.Background(), "cockpit_restart",
 		map[string]any{"project": "app", "process": "dev"}); err != nil {
@@ -411,7 +411,7 @@ func TestPromptIsNotTypedIntoADeadPane(t *testing.T) {
 	// A command that does not exist dies instantly. remain-on-exit keeps the
 	// corpse, a corpse settles perfectly, and without a liveness check the
 	// prompt gets typed into it and lost.
-	f := &fakeRunner{outputs: map[string]string{
+	f := &fakeRunner{before: map[string]string{"list-windows": ""}, outputs: map[string]string{
 		"list-windows": "1|ghost|1|222|0|127\n",
 		"capture-pane": "command not found\n",
 	}}
@@ -434,7 +434,7 @@ func TestPromptIsNotTypedIntoADeadPane(t *testing.T) {
 }
 
 func TestPromptDeliveryReportsATerminalOutcome(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{
+	f := &fakeRunner{before: map[string]string{"list-windows": ""}, outputs: map[string]string{
 		"list-windows": "1|helper|0|222|0|\n",
 		"capture-pane": "ready\n",
 	}}
@@ -460,7 +460,7 @@ func TestPromptDeliveryNeverReportsPending(t *testing.T) {
 		"1|helper|0|222|0|\n",
 		"1|helper|1|222|0|127\n",
 	} {
-		f := &fakeRunner{outputs: map[string]string{
+		f := &fakeRunner{before: map[string]string{"list-windows": ""}, outputs: map[string]string{
 			"list-windows": windows,
 			"capture-pane": "something\n",
 		}}
@@ -477,7 +477,7 @@ func TestPromptDeliveryNeverReportsPending(t *testing.T) {
 }
 
 func TestPromptNotDeliveredWhenTheWindowVanishes(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{
+	f := &fakeRunner{before: map[string]string{"list-windows": ""}, outputs: map[string]string{
 		"list-windows": "1|something-else|0|222|0|\n",
 		"capture-pane": "output\n",
 	}}
@@ -497,7 +497,7 @@ func TestPromptNotDeliveredWhenTheWindowVanishes(t *testing.T) {
 }
 
 func TestSpawnWithoutPromptReportsNoDelivery(t *testing.T) {
-	f := &fakeRunner{outputs: map[string]string{"list-windows": "1|helper|0|222|0|\n"}}
+	f := &fakeRunner{before: map[string]string{"list-windows": ""}, outputs: map[string]string{"list-windows": "1|helper|0|222|0|\n"}}
 	tools := testTools(t, f, devApp())
 	tools.Settle = fastSettle()
 

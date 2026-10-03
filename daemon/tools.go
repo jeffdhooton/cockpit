@@ -7,10 +7,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/process"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 const (
@@ -37,11 +39,18 @@ type Tools struct {
 	// Settle tunes how long to wait for a spawned agent to finish booting.
 	// Injectable so tests do not sleep.
 	Settle settleOptions
+	// Svc is the shared process service every lifecycle call goes through.
+	// It is the same code the TUI runs, so both see one set of rules.
+	Svc *process.Service
+	// tracker remembers first-observed times for attention items, in memory
+	// only; a restart forgets them, as the queue's contract says.
+	tracker sources.AttentionTracker
+	trackMu sync.Mutex
 }
 
 // NewTools builds the tool set backed by a config and a tmux runner.
 func NewTools(cfg *config.Config, configPath string, r sources.Runner, version string, port int) *Tools {
-	return &Tools{
+	t := &Tools{
 		Cfg:        cfg,
 		ConfigPath: configPath,
 		Runner:     r,
@@ -50,6 +59,8 @@ func NewTools(cfg *config.Config, configPath string, r sources.Runner, version s
 		Now:        time.Now,
 		Settle:     defaultSettleOptions(),
 	}
+	t.Svc = process.New(cfg, r)
+	return t
 }
 
 // Call dispatches a tool by name.
@@ -69,6 +80,10 @@ func (t *Tools) Call(ctx context.Context, name string, args map[string]any) (any
 		return t.restartProcess(ctx, args)
 	case "cockpit_signals":
 		return t.signals(ctx)
+	case "cockpit_attention":
+		return t.attention(ctx)
+	case "cockpit_workspaces":
+		return t.workspaces(ctx)
 	case "cockpit_git_status":
 		return t.gitStatus(ctx, args)
 	case "cockpit_spawn_agent":
@@ -99,6 +114,8 @@ func (t *Tools) listProjects(ctx context.Context) (any, error) {
 
 	type project struct {
 		Label            string `json:"label"`
+		Key              string `json:"key"`
+		Host             string `json:"host,omitempty"`
 		Path             string `json:"path"`
 		SessionRunning   bool   `json:"session_running"`
 		SessionAttached  bool   `json:"session_attached"`
@@ -106,29 +123,52 @@ func (t *Tools) listProjects(ctx context.Context) (any, error) {
 		ProcessesRunning int    `json:"processes_running"`
 		ProcessesDead    int    `json:"processes_dead"`
 		ProcessesTotal   int    `json:"processes_total"`
+		// ProcessesUnknown is true when the windows could not be read; the
+		// counts above are then zero because nothing was seen, not because
+		// nothing is running.
+		ProcessesUnknown bool   `json:"processes_unknown,omitempty"`
+		Error            string `json:"error,omitempty"`
 	}
 
 	projects := make([]project, 0, len(t.Cfg.Repos))
 	for _, repo := range t.Cfg.Repos {
-		s, running := live[repo.Label]
 		p := project{
-			Label:           repo.Label,
-			Path:            repo.Path,
-			SessionRunning:  running,
-			SessionAttached: s.Attached,
-			Windows:         s.Windows,
-			ProcessesTotal:  len(repo.Processes),
+			Label:          repo.Label,
+			Key:            repo.Key(),
+			Host:           repo.Host,
+			Path:           repo.Path,
+			ProcessesTotal: len(repo.Processes),
 		}
-		infos, _ := sources.InspectProcesses(ctx, t.Runner, repo)
-		for _, i := range infos {
-			if !i.Configured {
-				continue
-			}
-			switch i.State {
-			case sources.ProcessRunning:
-				p.ProcessesRunning++
-			case sources.ProcessDead:
-				p.ProcessesDead++
+		// Session state is read from this machine's server. A remote
+		// project's session lives elsewhere and is reported through its
+		// own inspection below rather than matched to a local session
+		// that happens to share the label.
+		if repo.Host == "" {
+			s, running := live[repo.Label]
+			p.SessionRunning = running
+			p.SessionAttached = s.Attached
+			p.Windows = s.Windows
+		}
+		if len(repo.Processes) > 0 || repo.Host != "" {
+			obs, err := t.Svc.Inspect(ctx, repo.Key())
+			if err != nil {
+				p.ProcessesUnknown = true
+				p.Error = err.Error()
+			} else {
+				if repo.Host != "" {
+					p.SessionRunning = obs.SessionExists
+				}
+				for _, i := range obs.Processes {
+					if !i.Configured {
+						continue
+					}
+					switch i.State {
+					case sources.ProcessRunning:
+						p.ProcessesRunning++
+					case sources.ProcessDead:
+						p.ProcessesDead++
+					}
+				}
 			}
 		}
 		projects = append(projects, p)
@@ -141,11 +181,27 @@ func (t *Tools) listProcesses(ctx context.Context, args map[string]any) (any, er
 	if err != nil {
 		return nil, err
 	}
-	infos, err := sources.InspectProcesses(ctx, t.Runner, repo)
+	obs, err := t.Svc.Inspect(ctx, repo.Key())
 	if err != nil {
-		return nil, err
+		// A failed read is a structured unknown, never a fabricated
+		// "nothing is running".
+		return map[string]any{
+			"project":   repo.Key(),
+			"outcome":   "unavailable",
+			"error":     err.Error(),
+			"processes": nil,
+		}, nil
 	}
-	return map[string]any{"project": repo.Label, "processes": infos}, nil
+	return map[string]any{
+		"project":        repo.Key(),
+		"host":           repo.Host,
+		"session":        obs.Session,
+		"session_exists": obs.SessionExists,
+		"generation":     obs.Generation,
+		"observed_at":    obs.ObservedAt,
+		"outcome":        "observed",
+		"processes":      obs.Processes,
+	}, nil
 }
 
 func (t *Tools) readOutput(ctx context.Context, args map[string]any) (any, error) {
@@ -162,7 +218,11 @@ func (t *Tools) readOutput(ctx context.Context, args map[string]any) (any, error
 		lines = maxOutputLines
 	}
 
-	out, err := t.Runner.Run(ctx, sources.CapturePaneArgs(sources.Target(repo.Label, window), lines)...)
+	r, err := t.Svc.RunnerFor(repo)
+	if err != nil {
+		return nil, err
+	}
+	out, err := r.Run(ctx, sources.CapturePaneArgs(window.target, lines)...)
 	if err != nil {
 		return nil, err
 	}
@@ -171,11 +231,17 @@ func (t *Tools) readOutput(ctx context.Context, args map[string]any) (any, error
 	collapsed := collapseBlankRuns(out)
 	returned := countLines(collapsed)
 
+	paneID := ""
+	if strings.HasPrefix(window.target, "%") {
+		paneID = window.target
+	}
 	return map[string]any{
-		"project": repo.Label,
-		"process": window,
-		"lines":   lines,
-		"output":  collapsed,
+		"project":   repo.Key(),
+		"process":   window.name,
+		"window_id": window.id,
+		"pane_id":   paneID,
+		"lines":     lines,
+		"output":    collapsed,
 		// Say what was dropped. A silently edited transcript is worse than a
 		// short one, because the caller cannot tell which it got.
 		"lines_returned":      returned,
@@ -236,40 +302,122 @@ func (t *Tools) gitStatus(ctx context.Context, args map[string]any) (any, error)
 	return map[string]any{"repos": out}, nil
 }
 
+// signals is the legacy envelope: the same facts as cockpit_attention,
+// adapted. It is not a second derivation.
 func (t *Tools) signals(ctx context.Context) (any, error) {
-	sessions, _ := sources.ListSessions(ctx, t.Runner)
-
-	processes := map[string][]sources.ProcessInfo{}
-	for _, repo := range t.Cfg.Repos {
-		if len(repo.Processes) == 0 {
-			continue
-		}
-		infos, err := sources.InspectProcesses(ctx, t.Runner, repo)
-		if err != nil {
-			continue
-		}
-		processes[repo.Label] = infos
-	}
-
-	in := sources.SignalInput{
-		Config:    t.Cfg.Signals,
-		Sessions:  sessions,
-		Git:       sources.GetGitStatus(ctx, sources.LocalCommandRunner{}, t.Cfg.Repos),
-		Processes: processes,
-		Now:       t.Now(),
-	}
-	if t.Cfg.GitHub.Enabled {
-		in.GitHub = sources.GetGitHubStatus(ctx, t.Cfg.Repos)
-	}
-	for _, h := range t.Cfg.Hermes {
-		in.Hermes = append(in.Hermes, sources.GetHermesStatus(ctx, http.DefaultClient, h))
-	}
-
-	signals := sources.ComputeSignals(in)
+	rep := t.collectAttention(ctx)
+	signals := sources.SignalsFromAttention(rep)
 	if signals == nil {
 		signals = []sources.Signal{}
 	}
 	return map[string]any{"signals": signals}, nil
+}
+
+// attentionSchemaVersion is the version of the cockpit_attention document.
+const attentionSchemaVersion = 1
+
+// attention is read-only: records and coverage, no navigation, no
+// dismissal, nothing started.
+func (t *Tools) attention(ctx context.Context) (any, error) {
+	rep := t.collectAttention(ctx)
+	return map[string]any{
+		"schema_version": attentionSchemaVersion,
+		"observed_at":    t.Now(),
+		"actionable":     rep.Actionable(),
+		"unavailable":    rep.Unavailable,
+		"items":          rep.Items,
+		"coverage":       rep.Coverage,
+	}, nil
+}
+
+// hostProbeTimeout bounds one remote host's contribution to a collection.
+const hostProbeTimeout = 10 * time.Second
+
+// workspaces is read-only: the host → session → pane tree, no previews,
+// no navigation, nothing started.
+func (t *Tools) workspaces(ctx context.Context) (any, error) {
+	ws := sources.BuildWorkspace(t.collectInput(ctx))
+	return map[string]any{
+		"schema_version": attentionSchemaVersion,
+		"observed_at":    t.Now(),
+		"hosts":          ws.Hosts,
+		"coverage":       ws.Coverage,
+	}, nil
+}
+
+// collectAttention derives the queue from one collection pass and stamps
+// first-observed times.
+func (t *Tools) collectAttention(ctx context.Context) sources.AttentionReport {
+	rep := sources.DeriveAttention(t.collectInput(ctx))
+	t.trackMu.Lock()
+	t.tracker.Track(&rep, t.Now())
+	t.trackMu.Unlock()
+	return rep
+}
+
+// collectInput observes every host — this machine through the local
+// runner, each configured host through ssh, in parallel and bounded — into
+// the input both the queue and the workspace tree derive from.
+func (t *Tools) collectInput(ctx context.Context) sources.AttentionInput {
+	now := t.Now()
+	in := sources.AttentionInput{Config: t.Cfg.Signals, SelfSession: t.Cfg.General.SessionName, Now: now}
+
+	reposOn := func(host string) []config.RepoConfig {
+		var out []config.RepoConfig
+		for _, r := range t.Cfg.Repos {
+			if r.Host == host {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	reports := make([]sources.HostReport, 1+len(t.Cfg.Hosts))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		reports[0] = sources.ObserveHostReport(ctx, t.Runner, sources.LocalCommandRunner{}, "", reposOn(""), now, now)
+	}()
+	for i, h := range t.Cfg.Hosts {
+		wg.Add(1)
+		go func(i int, h config.HostConfig) {
+			defer wg.Done()
+			hctx, cancel := context.WithTimeout(ctx, hostProbeTimeout)
+			defer cancel()
+			r, err := t.Svc.RunnerFor(config.RepoConfig{Host: h.Name})
+			if err != nil {
+				reports[i+1] = sources.HostReport{Host: h.Name, Outcome: sources.ObservationUnavailable, Err: err.Error(), ObservedAt: now}
+				return
+			}
+			hostNow := now
+			if ssh, ok := r.(sources.SSHRunner); ok {
+				remoteNow, err := ssh.RemoteNow(hctx)
+				if err != nil {
+					reports[i+1] = sources.HostReport{Host: h.Name, Outcome: sources.ObservationUnavailable, Err: err.Error(), ObservedAt: now}
+					return
+				}
+				hostNow = remoteNow
+			}
+			var cr sources.CommandRunner
+			if ssh, ok := r.(sources.SSHRunner); ok {
+				cr = ssh
+			}
+			reports[i+1] = sources.ObserveHostReport(hctx, r, cr, h.Name, reposOn(h.Name), hostNow, now)
+		}(i, h)
+	}
+	wg.Wait()
+	in.Hosts = reports
+
+	if t.Cfg.GitHub.Enabled {
+		in.GitHub = sources.GetGitHubStatus(ctx, t.Cfg.Repos)
+		in.GitHubAt = now
+	}
+	for _, h := range t.Cfg.Hermes {
+		in.Hermes = append(in.Hermes, sources.GetHermesStatus(ctx, http.DefaultClient, h))
+	}
+	in.HermesAt = now
+	return in
 }
 
 func (t *Tools) whoami(ctx context.Context) (any, error) {
@@ -423,15 +571,26 @@ func collapseBlankRuns(s string) string {
 
 // --- lookup helpers ---
 
+// projectKey reads the project argument, qualified by an optional host. A
+// bare label is a local project; "host/label", or a host argument, reaches
+// a remote one. A bare label is never reinterpreted as a remote project.
+func projectKey(args map[string]any) string {
+	label := argString(args, "project")
+	if host := argString(args, "host"); host != "" && label != "" && !strings.Contains(label, "/") {
+		return host + "/" + label
+	}
+	return label
+}
+
 // repo resolves the "project" argument to a configured repo.
 func (t *Tools) repo(args map[string]any) (config.RepoConfig, error) {
-	label := argString(args, "project")
-	if label == "" {
+	key := projectKey(args)
+	if key == "" {
 		return config.RepoConfig{}, fmt.Errorf("project is required")
 	}
-	repo, ok := t.Cfg.Repo(label)
-	if !ok {
-		return config.RepoConfig{}, fmt.Errorf("unknown project %q", label)
+	repo, _, err := t.Svc.Resolve(key)
+	if err != nil {
+		return config.RepoConfig{}, fmt.Errorf("unknown project %q", key)
 	}
 	return repo, nil
 }
@@ -453,31 +612,54 @@ func (t *Tools) process(args map[string]any) (config.RepoConfig, config.ProcessC
 	return repo, p, nil
 }
 
+// windowRef is a resolved window: its name, its id, and the pane target to
+// address it by. Names are for display; the target is an identity.
+type windowRef struct {
+	name   string
+	id     string
+	target string
+}
+
 // window resolves a target window, accepting either a configured process or
 // any window that is actually open — a spawned agent is not in the config but
-// is still worth reading.
-func (t *Tools) window(ctx context.Context, args map[string]any) (config.RepoConfig, string, error) {
+// is still worth reading. It resolves through the observation so the pane
+// addressed is the one seen, not the first window that shares a name.
+func (t *Tools) window(ctx context.Context, args map[string]any) (config.RepoConfig, windowRef, error) {
 	repo, err := t.repo(args)
 	if err != nil {
-		return config.RepoConfig{}, "", err
+		return config.RepoConfig{}, windowRef{}, err
 	}
 	name := argString(args, "process")
-	if name == "" {
-		return repo, "", fmt.Errorf("process is required")
+	paneID := argString(args, "pane_id")
+	if name == "" && paneID == "" {
+		return repo, windowRef{}, fmt.Errorf("process or pane_id is required")
 	}
-	if _, ok := repo.Process(name); ok {
-		return repo, name, nil
+	obs, err := t.Svc.Inspect(ctx, repo.Key())
+	if err != nil {
+		return repo, windowRef{}, fmt.Errorf("project %q: cannot read windows: %w", repo.Key(), err)
 	}
-
-	windows, err := sources.ListWindows(ctx, t.Runner, repo.Label)
-	if err == nil {
-		for _, w := range windows {
-			if w.Name == name {
-				return repo, name, nil
+	if paneID != "" {
+		// A pane id from cockpit_workspaces: it must belong to this
+		// project's session, or it is refused rather than read blind.
+		for _, p := range obs.Processes {
+			if p.PaneID == paneID {
+				return repo, windowRef{name: p.Name, id: p.WindowID, target: paneID}, nil
 			}
 		}
+		return repo, windowRef{}, fmt.Errorf("project %q has no pane %s", repo.Key(), paneID)
 	}
-	return repo, "", fmt.Errorf("project %q has no process or window %q", repo.Label, name)
+	for _, p := range obs.Processes {
+		if p.Name != name || p.PaneID == "" && p.WindowIndex < 0 {
+			continue
+		}
+		ref := windowRef{name: name, id: p.WindowID, target: p.PaneID}
+		if ref.target == "" {
+			// A fixture or an old tmux without ids: fall back to the name.
+			ref.target = sources.Target(repo.Label, name)
+		}
+		return repo, ref, nil
+	}
+	return repo, windowRef{}, fmt.Errorf("project %q has no process or window %q", repo.Key(), name)
 }
 
 // --- argument helpers ---

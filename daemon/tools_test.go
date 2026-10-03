@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 // fakeRunner records every tmux call and returns scripted output keyed by the
@@ -19,6 +19,15 @@ type fakeRunner struct {
 	calls   [][]string
 	outputs map[string]string
 	errs    map[string]error
+	// lock models the project lock's compare-and-set so the service can
+	// take and release it against a scripted server.
+	lock string
+	// before scripts outputs that apply only until the first mutating call
+	// (new-window, respawn-window, kill-window); outputs applies after. A
+	// spawn test can then describe the window it expects to exist once
+	// the spawn has happened without that window pre-existing.
+	before  map[string]string
+	mutated bool
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) (string, error) {
@@ -28,6 +37,30 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) (string, error) {
 	}
 	if err, ok := f.errs[args[0]]; ok {
 		return "", err
+	}
+	switch args[0] {
+	case "new-window", "respawn-window", "kill-window":
+		f.mutated = true
+	}
+	if !f.mutated {
+		if out, ok := f.before[args[0]]; ok {
+			return out, nil
+		}
+	}
+	switch args[0] {
+	case "if-shell":
+		if strings.Contains(args[3], "-gu") {
+			f.lock = ""
+		} else if f.lock == "" {
+			parts := strings.Fields(args[3])
+			f.lock = parts[len(parts)-1]
+		}
+		return "", nil
+	case "display-message":
+		if out, ok := f.outputs[args[0]]; ok {
+			return out, nil
+		}
+		return f.lock + "\n", nil
 	}
 	return f.outputs[args[0]], nil
 }
@@ -69,8 +102,8 @@ func decodeInto(t *testing.T, result any, v any) {
 func TestDefinitionsAreWellFormed(t *testing.T) {
 	defs := testTools(t, &fakeRunner{}).Definitions()
 
-	if len(defs) != 14 {
-		t.Errorf("want 14 tools, got %d", len(defs))
+	if len(defs) != 16 {
+		t.Errorf("want 16 tools, got %d", len(defs))
 	}
 	seen := map[string]bool{}
 	for _, d := range defs {
@@ -423,7 +456,7 @@ func TestSignalsIncludesDeadProcesses(t *testing.T) {
 			"list-windows":  "1|dev|1|222|0\n",
 			"list-sessions": "",
 		},
-		errs: map[string]error{"list-sessions": errors.New("no server")},
+		errs: map[string]error{"list-sessions": errors.New("no server running on /tmp/tmux-501/default")},
 	}
 	tools := testTools(t, f, devApp(config.ProcessConfig{Name: "dev", Command: "x"}))
 

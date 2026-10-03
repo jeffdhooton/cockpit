@@ -21,6 +21,62 @@ type Runner interface {
 // cannot know anything, the second is an answer.
 var ErrTmuxNotFound = errors.New("tmux not found in PATH")
 
+// ErrNoServer means tmux answered that no server is listening on the socket.
+// It is a verified empty world: no sessions, no windows, nothing running. Any
+// other failure to read is unknown state, and the two must never be confused,
+// because "verified absent" is the only reading that may permit creation.
+var ErrNoServer = errors.New("no tmux server running")
+
+// ErrNoSession means tmux answered that the named session does not exist. Like
+// ErrNoServer it is an answer rather than a failure to read.
+var ErrNoSession = errors.New("no such tmux session")
+
+// classifyTmuxMessage turns tmux's stderr into a sentinel where the message is
+// one of the two verified absences. Everything else stays an opaque failure.
+func classifyTmuxMessage(verb, msg string) error {
+	switch {
+	case noServerMessage(msg):
+		return fmt.Errorf("tmux %s: %s: %w", verb, msg, ErrNoServer)
+	case noSessionMessage(msg):
+		return fmt.Errorf("tmux %s: %s: %w", verb, msg, ErrNoSession)
+	}
+	return fmt.Errorf("tmux %s: %s", verb, msg)
+}
+
+func noServerMessage(msg string) bool {
+	return strings.Contains(msg, "no server running") ||
+		(strings.Contains(msg, "error connecting to") && strings.Contains(msg, "No such file or directory"))
+}
+
+func noSessionMessage(msg string) bool {
+	return strings.Contains(msg, "can't find session") || strings.Contains(msg, "no such session")
+}
+
+// IsNoServer reports whether an error is tmux saying no server is running —
+// by sentinel from a classifying runner, or by message from one that passes
+// tmux's text through unchanged, such as a fake or a remote shell.
+func IsNoServer(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrNoServer) || noServerMessage(err.Error())
+}
+
+// IsNoSession reports whether an error is tmux saying the session does not
+// exist. See IsNoServer for why the message is consulted.
+func IsNoSession(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrNoSession) || noSessionMessage(err.Error())
+}
+
+// IsVerifiedAbsence reports whether an error is one of the two answers that
+// prove a target does not exist, as opposed to a failure to look.
+func IsVerifiedAbsence(err error) bool {
+	return IsNoServer(err) || IsNoSession(err)
+}
+
 // ExecRunner runs tmux as a subprocess.
 type ExecRunner struct {
 	// Binary is the tmux executable, "tmux" when empty. Set it to an absolute
@@ -28,6 +84,24 @@ type ExecRunner struct {
 	// /usr/bin:/bin:/usr/sbin:/sbin that excludes Homebrew.
 	Binary  string
 	Timeout time.Duration
+	// Socket names a private tmux server (-L). Empty means the default
+	// server. Tests and isolated checks use it so nothing they do can touch
+	// the user's sessions. NoConfig starts that server without the user's
+	// tmux.conf, so base-index and friends cannot surprise a test.
+	Socket   string
+	NoConfig bool
+}
+
+// args prepends the socket selection, if any, to a tmux argv.
+func (r ExecRunner) args(args []string) []string {
+	if r.Socket == "" {
+		return args
+	}
+	prefix := []string{"-L", r.Socket}
+	if r.NoConfig {
+		prefix = append(prefix, "-f", "/dev/null")
+	}
+	return append(prefix, args...)
 }
 
 func (r ExecRunner) Run(ctx context.Context, args ...string) (string, error) {
@@ -43,7 +117,7 @@ func (r ExecRunner) Run(ctx context.Context, args ...string) (string, error) {
 		binary = "tmux"
 	}
 
-	out, err := exec.CommandContext(ctx, binary, args...).Output()
+	out, err := exec.CommandContext(ctx, binary, r.args(args)...).Output()
 	if err != nil {
 		verb := "tmux"
 		if len(args) > 0 {
@@ -54,7 +128,7 @@ func (r ExecRunner) Run(ctx context.Context, args ...string) (string, error) {
 		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return "", fmt.Errorf("tmux %s: %s", verb, strings.TrimSpace(string(ee.Stderr)))
+			return "", classifyTmuxMessage(verb, strings.TrimSpace(string(ee.Stderr)))
 		}
 		return "", fmt.Errorf("tmux %s: %w", verb, err)
 	}
@@ -74,18 +148,11 @@ func ResolveTmux() (string, error) {
 // DefaultRunner returns the Runner used outside tests.
 func DefaultRunner() Runner { return ExecRunner{} }
 
-// GetTmuxSessions returns all tmux sessions via the tmux CLI.
+// GetTmuxSessions returns all tmux sessions via the tmux CLI. No server
+// running is an answer — no sessions — while any other failure is returned,
+// because an unreadable server is not an empty one.
 func GetTmuxSessions(ctx context.Context) ([]TmuxSession, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", sessionFormat)
-	out, err := cmd.Output()
-	if err != nil {
-		// tmux server not running — not an error, just no sessions
-		return nil, nil
-	}
-	return parseTmuxOutput(string(out), "", time.Now())
+	return ListSessions(ctx, DefaultRunner())
 }
 
 // parseTmuxOutput parses list-sessions output for one host. The clock is a
@@ -109,10 +176,16 @@ func parseTmuxOutput(output, host string, now time.Time) ([]TmuxSession, error) 
 		}
 
 		// Layout is name | windows | attached | last_attached | status |
-		// status_at | status_window | view_of, and the name may contain the
-		// separator, so anchor on the seven fixed fields at the end and treat
-		// everything before them as the name.
-		nameEnd := len(parts) - 7
+		// status_at | status_window | view_of | session_id | pid | start_time,
+		// and the name may contain the separator, so anchor on the fixed
+		// fields at the end and treat everything before them as the name. A
+		// line with fewer fields came from an older format without the three
+		// identity fields; it still parses, with no identity.
+		trailing := sessionTrailingFields
+		if len(parts) < sessionTrailingFields+1 {
+			trailing = legacySessionTrailingFields
+		}
+		nameEnd := len(parts) - trailing
 		if nameEnd < 1 {
 			continue
 		}
@@ -128,7 +201,7 @@ func parseTmuxOutput(output, host string, now time.Time) ([]TmuxSession, error) 
 		status, reported := StatusFromOptions(
 			parts[nameEnd+3], parts[nameEnd+4], reportedWindow, reportedWindow, now)
 
-		sessions = append(sessions, TmuxSession{
+		sess := TmuxSession{
 			Name:           strings.Join(parts[:nameEnd], fieldSep),
 			Windows:        windows,
 			Attached:       attached,
@@ -137,7 +210,15 @@ func parseTmuxOutput(output, host string, now time.Time) ([]TmuxSession, error) 
 			StatusReported: reported,
 			Host:           host,
 			ViewOf:         parts[nameEnd+6],
-		})
+		}
+		if reported {
+			sess.StatusSource = StatusSourceSession
+		}
+		if trailing == sessionTrailingFields {
+			sess.ID = parts[nameEnd+7]
+			sess.Generation = serverGeneration(parts[nameEnd+8], parts[nameEnd+9])
+		}
+		sessions = append(sessions, sess)
 	}
 	return sessions, nil
 }

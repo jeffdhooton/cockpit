@@ -11,10 +11,10 @@ func TestParseGitHubRepo(t *testing.T) {
 		expect string
 		hasErr bool
 	}{
-		{"https", "https://github.com/jhoot/cockpit.git", "jhoot/cockpit", false},
-		{"https no .git", "https://github.com/jhoot/cockpit", "jhoot/cockpit", false},
-		{"ssh", "git@github.com:jhoot/cockpit.git", "jhoot/cockpit", false},
-		{"ssh no .git", "git@github.com:jhoot/cockpit", "jhoot/cockpit", false},
+		{"https", "https://github.com/jeffdhooton/cockpit.git", "jeffdhooton/cockpit", false},
+		{"https no .git", "https://github.com/jeffdhooton/cockpit", "jeffdhooton/cockpit", false},
+		{"ssh", "git@github.com:jeffdhooton/cockpit.git", "jeffdhooton/cockpit", false},
+		{"ssh no .git", "git@github.com:jeffdhooton/cockpit", "jeffdhooton/cockpit", false},
 		{"invalid", "https://gitlab.com/foo/bar", "", true},
 		{"empty", "", "", true},
 	}

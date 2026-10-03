@@ -2,16 +2,16 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
-	"github.com/jhoot/cockpit/tui"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +30,10 @@ var rootCmd = &cobra.Command{
 	RunE:  runRoot,
 	// A command that fails at runtime should show its error, not bury it under
 	// the full help text. Usage still prints for genuine usage mistakes.
-	SilenceUsage: true,
+	// Errors are printed once, by Execute, so an explicit exit code and its
+	// message are not echoed twice.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 var initCmd = &cobra.Command{
@@ -68,6 +71,14 @@ func init() {
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		var ee exitError
+		if errors.As(err, &ee) {
+			if ee.msg != "" {
+				fmt.Fprintln(os.Stderr, "cockpit: "+ee.msg)
+			}
+			os.Exit(ee.code)
+		}
+		fmt.Fprintln(os.Stderr, "Error: "+err.Error())
 		os.Exit(1)
 	}
 }
@@ -89,34 +100,6 @@ func getConfigPath() string {
 		return cfgPath
 	}
 	return config.DefaultConfigPath()
-}
-
-func runInit(cmd *cobra.Command, args []string) error {
-	path := getConfigPath()
-	if _, err := os.Stat(path); err == nil {
-		fmt.Printf("Config already exists at %s. Remove it first to regenerate.\n", path)
-		return nil
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	if err := os.WriteFile(path, []byte(getConfigTemplate()), 0644); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	fmt.Printf("Config created at %s — edit it to add your repos and vault path.\n", path)
-	return nil
-}
-
-// getConfigTemplate returns the config template string.
-// This is injected from the main package via SetConfigTemplate.
-var getConfigTemplate func() string
-
-func SetConfigTemplate(fn func() string) {
-	getConfigTemplate = fn
 }
 
 func runRoot(cmd *cobra.Command, args []string) error {

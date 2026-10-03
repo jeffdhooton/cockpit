@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/daemon"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/daemon"
 	"github.com/spf13/cobra"
 )
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 func TestEventTablesMapBothEngines(t *testing.T) {
@@ -47,11 +47,18 @@ func TestUnknownEventInventsNoState(t *testing.T) {
 	}
 }
 
-// statusRunner records the tmux argv the endpoint produces.
-type statusRunner struct{ calls [][]string }
+// statusRunner records the tmux argv the endpoint produces, answering reads
+// from outputs keyed by verb.
+type statusRunner struct {
+	calls   [][]string
+	outputs map[string]string
+}
 
 func (r *statusRunner) Run(_ context.Context, args ...string) (string, error) {
 	r.calls = append(r.calls, args)
+	if len(args) > 0 {
+		return r.outputs[args[0]], nil
+	}
 	return "", nil
 }
 

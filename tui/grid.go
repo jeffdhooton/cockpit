@@ -1,16 +1,16 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jhoot/cockpit/config"
-	"github.com/jhoot/cockpit/sources"
+	"github.com/jeffdhooton/cockpit/config"
+	"github.com/jeffdhooton/cockpit/sources"
 )
 
 // Target is one tile in the grid: a running tmux session, a saved repo with no
@@ -39,6 +39,22 @@ type Target struct {
 	// Host, Enter opens a shell on that machine and the shell's tmux session
 	// is folded into this tile; without one the tile is read-only.
 	Hermes *sources.HermesStatus
+	// HostBox marks the tile that stands for a whole machine. At the root
+	// every target on that host collapses into it, and Enter opens the host's
+	// own grid rather than switching to anything.
+	HostBox bool
+	// Polled is true once a host box's machine has answered at least one
+	// poll. Until then the box says nothing about reachability rather than
+	// claiming a machine it has never spoken to is up.
+	Polled bool
+	// Display overrides the name on the tile. Inside a host's own grid every
+	// tile would otherwise repeat the host the panel title already names, and
+	// on a phone the prefix costs the cells the label needs.
+	Display string
+	// Spine is set on the one tile for the spine fleet. It summarises
+	// `spine bearings --json`; Enter switches to the spine session, and a
+	// local session of that name is folded into it rather than drawn twice.
+	Spine *sources.SpineStatus
 }
 
 // Running reports whether the target has a live tmux session behind it.
@@ -46,16 +62,23 @@ func (t Target) Running() bool { return t.Session != nil }
 
 // Key identifies the target across hosts: host/label remotely, label locally.
 // A Hermes tile is keyed by its label alone: it is named for the gateway, not
-// for the machine it happens to run on.
+// for the machine it happens to run on. A host box is keyed by the machine's
+// own name, which "mini/mini" would only repeat.
 func (t Target) Key() string {
-	if t.Host == "" || t.Hermes != nil {
+	if t.Host == "" || t.Hermes != nil || t.HostBox {
 		return t.Label
 	}
 	return t.Host + "/" + t.Label
 }
 
-// Name is what the tile shows: the key, so a remote tile names its host.
-func (t Target) Name() string { return t.Key() }
+// Name is what the tile shows: the key, so a remote tile names its host, or
+// Display where the grid has overridden it.
+func (t Target) Name() string {
+	if t.Display != "" {
+		return t.Display
+	}
+	return t.Key()
+}
 
 // AttachProcesses joins per-repo process state onto the tiles. It is separate
 // from BuildTargets because process data arrives on its own poll and should
@@ -268,13 +291,22 @@ func MoveGridCursor(idx, count, cols, dx, dy int) int {
 	return idx
 }
 
+// cursorID is what the grid cursor remembers a tile by: its label, except
+// the spine tile, whose label a configured repo named spine would share.
+func (t Target) cursorID() string {
+	if t.Spine != nil {
+		return spineCursor
+	}
+	return t.Label
+}
+
 // resolveGridCursor turns the stored cursor label into an index. When the label
 // is gone — session died, repo dropped from config — it clamps the previous
 // index into range so the selection lands on a neighbour instead of jumping to
 // the top.
 func resolveGridCursor(targets []Target, label string, prev int) int {
 	for i := range targets {
-		if targets[i].Label == label {
+		if targets[i].cursorID() == label {
 			return i
 		}
 	}
@@ -297,6 +329,17 @@ func resolveGridCursor(targets []Target, label string, prev int) int {
 func tileMarker(t Target) string {
 	glyph, v := "●", VariantMuted
 	switch {
+	case t.Spine != nil:
+		return spineMarker(t.Spine)
+	case t.HostBox:
+		switch {
+		case !t.Polled:
+			glyph, v = "○", VariantMuted
+		case t.Unreachable:
+			glyph, v = "⚠", VariantWarning
+		default:
+			v = VariantAccent
+		}
 	case t.Hermes != nil:
 		switch {
 		case !t.Hermes.Reachable:
@@ -346,7 +389,7 @@ func renderTile(t Target, width int, selected, compact bool) string {
 	switch {
 	case selected:
 		nameStyle = BoldText.Foreground(ColorAccent)
-	case !t.Running():
+	case !t.Running() && t.Spine == nil:
 		nameStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 	}
 
@@ -365,16 +408,27 @@ func renderTile(t Target, width int, selected, compact bool) string {
 	// marker gets the cell beside it. Branch, dirty counts and the process
 	// indicator do not survive the trip.
 	if compact {
+		if t.Spine != nil {
+			// The needs-you count is the one number worth a phone's line.
+			return box.Height(1).MaxHeight(gridCompactTileH).
+				Render(key + tileMarker(t) + " " + nameStyle.Render(Truncate(t.Name(), nameW-4)) + " " + spineCompactCount(t.Spine))
+		}
 		return box.Height(1).MaxHeight(gridCompactTileH).
 			Render(key + tileMarker(t) + " " + nameStyle.Render(Truncate(t.Name(), nameW-2)))
 	}
 
 	name := key + nameStyle.Render(Truncate(t.Name(), nameW))
+	if t.Spine != nil {
+		status, detail := spineTileLines(t.Spine, inner)
+		return box.Height(3).MaxHeight(gridTileH).Render(name + "\n" + status + "\n" + detail)
+	}
 
 	// Shape carries session existence: a hollow ring means there is nothing to
 	// attach to, while every live session keeps the filled status dot.
 	status := StatusRing("no session", VariantMuted)
-	if t.Hermes != nil {
+	if t.HostBox {
+		status = hostBoxStatusLine(t, inner)
+	} else if t.Hermes != nil {
 		status = hermesStatusLine(t.Hermes, inner)
 	} else if t.Unreachable {
 		// Last-known data under a warning, never a blank tile.
@@ -512,9 +566,16 @@ func (m Model) View() string {
 			WarningText.Render("Terminal too narrow.\nResize or press q to quit."))
 	}
 
-	page := m.dashboardView()
-	if m.view == ViewGrid {
+	var page string
+	switch m.view {
+	case ViewGrid:
 		page = m.gridView()
+	case ViewAttention:
+		page = m.attentionView()
+	case ViewProcesses:
+		page = m.processesView()
+	default:
+		page = m.sessionsView()
 	}
 
 	switch m.mode {
@@ -522,8 +583,8 @@ func (m Model) View() string {
 		page = m.overlay(m.renderNewSessionDialog())
 	case ModeSearch:
 		page = m.overlay(m.renderSearchDialog())
-	case ModeVizPicker:
-		page = m.overlay(m.renderVizPickerDialog())
+	case ModeConfirm:
+		page = m.overlay(m.procs.confirmView(m.width))
 	}
 	return page
 }
@@ -547,10 +608,83 @@ func (m Model) gridContentWidth() int {
 	return w
 }
 
-// gridTargets builds the current tile list from live sessions and configured repos.
+// hostBoxes is one collapsed tile per configured machine, in config order.
+// The tile carries the host's link state and nothing about its contents:
+// what is running inside is one keypress away and speaks for itself there.
+func (m Model) hostBoxes() []Target {
+	out := make([]Target, 0, len(m.config.Hosts))
+	for _, h := range m.config.Hosts {
+		st, polled := m.hosts[h.Name]
+		out = append(out, Target{
+			Label:       h.Name,
+			Host:        h.Name,
+			HostBox:     true,
+			Polled:      polled,
+			Unreachable: st.unreachable,
+		})
+	}
+	return out
+}
+
+// insertHostBoxes places the machine tiles after the live sessions and any
+// gateway, and before the dormant repos — the same slot a gateway takes. A
+// box holds running work; a dormant repo is a project waiting to be opened.
+func insertHostBoxes(targets, boxes []Target) []Target {
+	if len(boxes) == 0 {
+		return targets
+	}
+	at := len(targets)
+	for i := range targets {
+		if !targets[i].Running() && targets[i].Hermes == nil && targets[i].Spine == nil {
+			at = i
+			break
+		}
+	}
+	out := make([]Target, 0, len(targets)+len(boxes))
+	out = append(out, targets[:at]...)
+	out = append(out, boxes...)
+	return append(out, targets[at:]...)
+}
+
+// insertSpine places the spine tile right after the live sessions, beside
+// them and ahead of any gateway, host box or dormant repo.
+func insertSpine(targets []Target, spine Target) []Target {
+	at := len(targets)
+	for i := range targets {
+		if !targets[i].Running() {
+			at = i
+			break
+		}
+	}
+	out := make([]Target, 0, len(targets)+1)
+	out = append(out, targets[:at]...)
+	out = append(out, spine)
+	return append(out, targets[at:]...)
+}
+
+// gridTargets builds the tile list for the level the grid is on. At the root
+// that is this machine's sessions and repos, plus one collapsed box per
+// configured host; inside a host it is that host's targets alone. Everything
+// below is written against the scoped inputs, so one code path draws both
+// levels and a host's grid reads exactly like the root's.
 func (m Model) gridTargets() []Target {
-	sessions := append(append([]sources.TmuxSession{}, m.sessions.Sessions...), m.remoteSessions()...)
-	repos := append(append([]sources.GitRepoStatus{}, m.repos.Repos...), m.remoteRepos()...)
+	var sessions []sources.TmuxSession
+	var repos []sources.GitRepoStatus
+	if m.gridHost == "" {
+		// The spine session belongs to the spine tile, not a tile of its own.
+		for _, s := range m.sessions.Sessions {
+			if s.Name != spineSession {
+				sessions = append(sessions, s)
+			}
+		}
+		repos = append(repos, m.repos.Repos...)
+	} else if _, declared := m.config.Host(m.gridHost); declared {
+		// An undeclared host draws an empty grid rather than its last-known
+		// tiles: it is a machine cockpit no longer knows how to reach, and
+		// backspace is still there to get out of it.
+		sessions = append(sessions, m.hosts[m.gridHost].poll.Sessions...)
+		repos = append(repos, m.reposOn(m.gridHost)...)
+	}
 
 	// Local statuses come from the sessions model, which also holds the
 	// pane-hash guesses. A remote session carries its own reported status
@@ -565,8 +699,14 @@ func (m Model) gridTargets() []Target {
 		}
 	}
 
+	// A gateway shows up on the level its machine is on: bound to a host it
+	// lives inside that host's box, and hostless it has no box to live in and
+	// stays at the root.
 	var hermes []sources.HermesStatus
 	for _, h := range m.config.Hermes {
+		if h.Host != m.gridHost {
+			continue
+		}
 		st, polled := m.hermes[h.Label]
 		if !polled {
 			st = sources.HermesStatus{Label: h.Label}
@@ -576,11 +716,20 @@ func (m Model) gridTargets() []Target {
 	}
 
 	targets := BuildTargets(sessions, repos, statuses, m.config.General.SessionName, hermes...)
+	if m.gridHost == "" {
+		targets = insertSpine(targets, m.spineTarget())
+		targets = insertHostBoxes(targets, m.hostBoxes())
+	}
 	for i := range targets {
 		if targets[i].Host == "" {
 			continue
 		}
 		targets[i].Unreachable = m.hosts[targets[i].Host].unreachable
+		if m.gridHost != "" {
+			// Every tile here is on the host the title names, so the prefix
+			// on each one says nothing the eye has not already read.
+			targets[i].Display = targets[i].Label
+		}
 	}
 
 	processes := make(map[string][]sources.ProcessInfo, len(m.processes))
@@ -600,33 +749,35 @@ func (m Model) gridView() string {
 	targets := m.gridTargets()
 	cursor := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
 
-	hints := GridKeyhintsView(m.width)
-	if m.transientErr != "" {
+	spineSelected := cursor >= 0 && cursor < len(targets) && targets[cursor].Spine != nil
+	hints := GridKeyhintsView(m.width, m.gridHost != "", m.attn.badge(), spineSelected)
+	switch {
+	case m.mode == ModeCapture:
+		hints = "  " + AccentText.Render("capture ›") + " " + m.captureInput.View()
+	case m.transientErr != "":
 		hints = WarningText.Render(m.transientErr)
 	}
 
 	// A phone gets the compact tile: no preview to compete with, and the rows
 	// it saves are the rows it has fewest of.
 	compact := m.width < MobileMaxWidth
-	tileH := tileHeight(compact)
 
-	body := m.height - 1 // keyhints row
-	if body < tileH {
-		body = tileH
+	body, gridH := m.gridHeights(compact)
+	showPreview := m.width >= MobileMaxWidth && len(targets) > 0
+	if !showPreview {
+		gridH = body
 	}
 
-	gridH := body
-	showPreview := m.width >= MobileMaxWidth && len(targets) > 0
-	if showPreview {
-		gridH = body * 3 / 5
-		if gridH < tileH+3 {
-			gridH = tileH + 3
-		}
+	// The title carries the level, so the grid never leaves you guessing
+	// which machine's tiles you are looking at.
+	title := "Cockpit"
+	if m.gridHost != "" {
+		title = m.gridHost
 	}
 
 	// Panel chrome eats 2 border rows + 1 title row on top of the content width.
 	grid := RenderGrid(targets, cursor, m.gridContentWidth(), gridH-3, compact)
-	page := RenderPanel("Cockpit", grid, m.width, gridH, true)
+	page := RenderPanel(title, grid, m.width, gridH, true)
 
 	if showPreview {
 		page = lipgloss.JoinVertical(lipgloss.Left, page, m.renderPreviewPanel(body-gridH))
@@ -635,9 +786,68 @@ func (m Model) gridView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, page, hints)
 }
 
+// gridHeights splits the rows above the key bar between the grid and, on
+// desktop widths, the preview panel below it.
+func (m Model) gridHeights(compact bool) (body, gridH int) {
+	tileH := tileHeight(compact)
+	body = max(m.height-1, tileH) // keyhints row
+	gridH = max(body*3/5, tileH+3)
+	return body, gridH
+}
+
+// spinePreviewLines is how many content lines the spine preview panel has
+// below its title: the same rows renderPreviewPanel hands spinePreview.
+func (m Model) spinePreviewLines() int {
+	body, gridH := m.gridHeights(m.width < MobileMaxWidth)
+	return body - gridH - 3
+}
+
+// scrollSpine moves the spine preview window by delta lines, clamped to the
+// content the panel can show.
+func (m *Model) scrollSpine(delta int) {
+	t, ok := m.gridSelected()
+	if !ok || t.Spine == nil {
+		m.spineScroll = 0
+		return
+	}
+	limit := spineMaxScroll(t.Spine, m.now(), m.width-4, m.spinePreviewLines())
+	m.spineScroll = max(0, min(m.spineScroll+delta, limit))
+}
+
+// gridLocalSession is the tmux session on this machine under the grid cursor,
+// or "" when the selection is remote, dormant, or a host box. Both the preview
+// and `s` shell out to local tmux, so a selection this machine does not own has
+// nothing for either of them: they must show and save nothing rather than fall
+// back on whatever local session sat at the same index.
+func (m Model) gridLocalSession() string {
+	targets := m.gridTargets()
+	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+	if idx < 0 || idx >= len(targets) {
+		return ""
+	}
+	t := targets[idx]
+	if t.Host != "" || t.HostBox || !t.Running() {
+		return ""
+	}
+	return t.Label
+}
+
+// gridSelected is the target under the grid cursor.
+func (m Model) gridSelected() (Target, bool) {
+	targets := m.gridTargets()
+	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+	if idx < 0 || idx >= len(targets) {
+		return Target{}, false
+	}
+	return targets[idx], true
+}
+
 // renderPreviewPanel renders the capture-pane output for the selected session.
 func (m Model) renderPreviewPanel(height int) string {
-	name := m.selectedSessionName()
+	if t, ok := m.gridSelected(); ok && t.Spine != nil {
+		return RenderPanel("Spine fleet", spinePreview(t.Spine, m.now(), m.width-4, height-3, m.spineScroll), m.width, height, false)
+	}
+	name := m.gridLocalSession()
 	if name == "" || m.sessionPreview == "" {
 		return RenderPanel("Preview", MutedText.Render("(no preview)"), m.width, height, false)
 	}
@@ -668,7 +878,11 @@ func (m *Model) setGridCursor(targets []Target, idx int) {
 		return
 	}
 	m.gridIndex = idx
-	m.gridCursor = targets[idx].Label
+	m.gridCursor = targets[idx].cursorID()
+	if targets[idx].Spine != nil {
+		return
+	}
+	m.spineScroll = 0
 	for i, s := range m.sessions.Sessions {
 		if s.Name == targets[idx].Label {
 			m.sessions.Cursor = i
@@ -685,6 +899,16 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	}
 	t := targets[idx]
 
+	// A host box opens that machine's own grid. It is navigation, not a
+	// jump: there is no session behind a box to switch to.
+	if t.HostBox {
+		m.openHost(t.Label)
+		return nil
+	}
+	if t.Spine != nil {
+		return m.openSpine()
+	}
+
 	// A Hermes tile opens a shell on its host. Without a host it is
 	// read-only: there is nothing to attach to.
 	if t.Hermes != nil {
@@ -696,9 +920,10 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 
 	// A configured repo goes through the full jump even when its session is
 	// already up, so processes that died or were never started come back.
+	svc := m.svc
 	if _, configured := m.config.Repo(t.Label); configured {
 		repo := m.repoForLabel(t.Label, "")
-		return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
+		return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(svc, repo)} }
 	}
 	if t.Running() {
 		name := t.Label
@@ -708,7 +933,29 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 		return nil
 	}
 	repo := m.repoForLabel(t.Label, t.Repo.Path)
-	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(repo)} }
+	return func() tea.Msg { return tmuxSwitchResultMsg{Err: tmuxJumpRepo(svc, repo)} }
+}
+
+// openHost descends into one machine's grid, remembering the box it came from
+// so leaveHost can put the cursor back on it. The box is labelled for the host,
+// so the host name is the label to return to. The cursor lands on tile one.
+func (m *Model) openHost(host string) {
+	m.gridRootCursor = host
+	m.gridHost = host
+	m.gridCursor = ""
+	m.gridIndex = 0
+	m.setGridCursor(m.gridTargets(), 0)
+}
+
+// leaveHost pops back to the root, onto the box that was open. When that box
+// is gone — the host dropped from config while it was open — resolveGridCursor
+// clamps the stale index, which is why the index is reset alongside the label.
+func (m *Model) leaveHost() {
+	m.gridHost = ""
+	m.gridCursor = m.gridRootCursor
+	m.gridIndex = 0
+	m.gridRootCursor = ""
+	m.spineScroll = 0
 }
 
 // enterHotkey jumps to the target carrying a digit, taking the selection with
@@ -738,6 +985,21 @@ func hermesStatusLine(h *sources.HermesStatus, inner int) string {
 	}
 }
 
+// hostBoxStatusLine renders a machine's state on its collapsed tile: whether
+// the link is up, and nothing about what is running inside it. The contents
+// are one keypress away and speak for themselves; the box is about the box.
+// Before the first poll it says neither, because it does not yet know.
+func hostBoxStatusLine(t Target, inner int) string {
+	switch {
+	case !t.Polled:
+		return StatusRing(Truncate("connecting", inner-2), VariantMuted)
+	case t.Unreachable:
+		return WarningText.Render("⚠ " + Truncate("unreachable", inner-2))
+	default:
+		return StatusDot(Truncate("reachable", inner-2), VariantAccent)
+	}
+}
+
 // enterRemote jumps to a project on another host through a local view
 // session. An unconfigured remote session — one someone started by hand on
 // that machine — still gets a view window; it just has no processes to bring
@@ -754,7 +1016,7 @@ func (m *Model) enterRemote(t Target) tea.Cmd {
 		}
 		repo = config.RepoConfig{Host: t.Host, Label: t.Label}
 	}
-	return jumpRemoteCmd(host, repo)
+	return m.jumpRemoteCmd(host, repo)
 }
 
 // enterHermes opens a shell on the gateway's host: a remote tmux session named
@@ -769,7 +1031,7 @@ func (m *Model) enterHermes(t Target) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	return jumpRemoteCmd(host, hermesShellRepo(config.HermesConfig{Label: t.Label, Host: t.Host}))
+	return m.jumpRemoteCmd(host, hermesShellRepo(config.HermesConfig{Label: t.Label, Host: t.Host}))
 }
 
 // hermesShellRepo describes the shell session as a repo with no processes,
@@ -777,15 +1039,6 @@ func (m *Model) enterHermes(t Target) tea.Cmd {
 // directory, which the remote shell expands.
 func hermesShellRepo(h config.HermesConfig) config.RepoConfig {
 	return config.RepoConfig{Label: h.Label, Host: h.Host, Path: "~"}
-}
-
-func jumpRemoteCmd(host config.HostConfig, repo config.RepoConfig) tea.Cmd {
-	return func() tea.Msg {
-		local := sources.DefaultRunner()
-		remote := sources.SSHRunner{Host: host.Name, Tmux: host.Tmux}
-		err := sources.JumpRemote(context.Background(), local, remote, host, repo)
-		return tmuxSwitchResultMsg{Err: err}
-	}
 }
 
 // handleGridKey is the grid view's key surface. It is deliberately narrower than
@@ -811,11 +1064,51 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 		return move(0, 1)
 	case "enter":
 		return m.enterTarget(targets, idx)
+	case "J", "pgdown":
+		step := 1
+		if msg.String() == "pgdown" {
+			step = max(1, m.spinePreviewLines()-2)
+		}
+		m.scrollSpine(step)
+		return nil
+	case "K", "pgup":
+		step := 1
+		if msg.String() == "pgup" {
+			step = max(1, m.spinePreviewLines()-2)
+		}
+		m.scrollSpine(-step)
+		return nil
+	case "backspace":
+		// At the root there is nowhere above to go, so this is a no-op
+		// rather than an exit: backspace should never quit anything.
+		if m.gridHost != "" {
+			m.leaveHost()
+			return m.fetchPreview()
+		}
+		return nil
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9", "0":
 		return m.enterHotkey(targets, msg.String())
-	case "d":
-		m.view = ViewDashboard
-		return nil
+	case "d", "g":
+		m.openSessions()
+		return m.fetchPanePreview()
+	case "c":
+		return m.startCapture()
+	case "a":
+		return m.openAttention()
+	case "p":
+		if idx < 0 || idx >= len(targets) {
+			return nil
+		}
+		t := targets[idx]
+		if t.HostBox {
+			m.transientErr = "Open a project to manage its processes."
+			m.transientTimer = 3
+			return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+		}
+		if (t.Hermes != nil && !t.Running()) || t.Spine != nil {
+			return nil
+		}
+		return m.openProcessesFor(t.Host, t.Label, "")
 	case "n":
 		m.mode = ModeNewSession
 		m.newSessionStep = 0
@@ -826,10 +1119,9 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 		m.newSessionInput.Focus()
 		return nil
 	case "s":
-		if idx < len(targets) && targets[idx].Running() {
-			return m.saveSessionAsRepo()
-		}
-		return nil
+		// Only a session on this machine: the save reads its path out of the
+		// local tmux server and writes a local [[repos]] entry.
+		return m.saveSessionAsRepo(m.gridLocalSession())
 	case "/":
 		m.mode = ModeSearch
 		m.searchInput.SetValue("")
@@ -837,7 +1129,7 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 		m.updateSearchResults()
 		return nil
 	case "r":
-		return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub())
+		return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub(), m.fetchSpine())
 	case "q":
 		return tea.Quit
 	}

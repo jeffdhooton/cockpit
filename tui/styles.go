@@ -171,8 +171,8 @@ func RenderPanel(title string, content string, width int, height int, focused bo
 	style := lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(borderColor).
-		Width(width - 2).
-		Height(height - 2).
+		Width(width-2).
+		Height(height-2).
 		Padding(0, 1)
 
 	return style.Render(titledContent)
@@ -201,4 +201,14 @@ func Truncate(s string, maxLen int) string {
 		truncated = truncated[:idx]
 	}
 	return truncated + "…"
+}
+
+// padRight pads s to width using its rendered cell width, so styled strings
+// (which carry ANSI escapes) pad correctly rather than counting escape bytes.
+func padRight(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }

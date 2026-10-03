@@ -1,3 +1,4 @@
 cockpit
 *.exe
 dist/
+.superpowers/

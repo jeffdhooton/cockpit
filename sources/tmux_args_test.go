@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 func TestNewSessionArgs(t *testing.T) {
@@ -27,9 +27,10 @@ func TestNewWindowArgs(t *testing.T) {
 	}
 	got := NewWindowArgs("my-app", p, "/tmp/my-app")
 	want := []string{
-		"new-window", "-d", "-t", "my-app:", "-n", "dev",
+		"new-window", "-d", "-a", "-t", "my-app:{end}", "-n", "dev",
 		"-c", "/tmp/my-app/web", "-e", "PORT=3000", "npm run dev",
-		";", "set-window-option", "-t", "my-app:dev", "remain-on-exit", "on",
+		";", "set-window-option", "-t", "my-app:{end}", "remain-on-exit", "on",
+		";", "set-window-option", "-t", "my-app:{end}", "@cockpit_managed", "dev",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
@@ -40,9 +41,10 @@ func TestNewWindowArgsWithoutEnvOrWorkingDir(t *testing.T) {
 	p := config.ProcessConfig{Name: "dev", Command: "npm run dev"}
 	got := NewWindowArgs("my-app", p, "/tmp/my-app")
 	want := []string{
-		"new-window", "-d", "-t", "my-app:", "-n", "dev",
+		"new-window", "-d", "-a", "-t", "my-app:{end}", "-n", "dev",
 		"-c", "/tmp/my-app", "npm run dev",
-		";", "set-window-option", "-t", "my-app:dev", "remain-on-exit", "on",
+		";", "set-window-option", "-t", "my-app:{end}", "remain-on-exit", "on",
+		";", "set-window-option", "-t", "my-app:{end}", "@cockpit_managed", "dev",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
@@ -63,6 +65,8 @@ func TestRespawnWindowArgs(t *testing.T) {
 	want := []string{
 		"respawn-window", "-k", "-t", "my-app:dev",
 		"-c", "/tmp/my-app", "-e", "PORT=3000", "npm run dev",
+		";", "set-window-option", "-t", "my-app:dev", "remain-on-exit", "on",
+		";", "set-window-option", "-t", "my-app:dev", "@cockpit_managed", "dev",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q\nwant %q", got, want)
@@ -259,6 +263,14 @@ func TestNewSessionArgsKeepsFailuresReadable(t *testing.T) {
 	// window — the user's own shell behaves normally.
 	got := RemainOnExitFailedArgs("app")
 	want := []string{"set-option", "-t", "app", "remain-on-exit", "failed"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+func TestCapturePaneVisibleArgsReadsOnlyTheScreen(t *testing.T) {
+	got := CapturePaneVisibleArgs("%7")
+	want := []string{"capture-pane", "-p", "-t", "%7"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %q want %q", got, want)
 	}

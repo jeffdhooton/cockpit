@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jhoot/cockpit/config"
+	"github.com/jeffdhooton/cockpit/config"
 )
 
 // A view is a local tmux session, named for a remote host, whose windows each
@@ -67,18 +67,24 @@ func JumpRemote(ctx context.Context, local, remote Runner, host config.HostConfi
 		_, _ = remote.Run(ctx, SelectFirstWindowArgs(repo.Label)...)
 	}
 
+	return OpenRemoteView(ctx, local, host, repo.Label)
+}
+
+// OpenRemoteView brings up the local view window for a remote session that
+// already exists, and switches to it. It is the local half of a jump.
+func OpenRemoteView(ctx context.Context, local Runner, host config.HostConfig, session string) error {
 	if !SessionExists(ctx, local, host.Name) {
-		if _, err := local.Run(ctx, ViewSessionArgs(host, repo.Label)...); err != nil {
-			return fmt.Errorf("jump %s: create view: %w", repo.Key(), err)
+		if _, err := local.Run(ctx, ViewSessionArgs(host, session)...); err != nil {
+			return fmt.Errorf("jump %s/%s: create view: %w", host.Name, session, err)
 		}
-	} else if err := ensureViewWindow(ctx, local, host, repo.Label); err != nil {
-		return fmt.Errorf("jump %s: %w", repo.Key(), err)
+	} else if err := ensureViewWindow(ctx, local, host, session); err != nil {
+		return fmt.Errorf("jump %s/%s: %w", host.Name, session, err)
 	}
 
 	if _, err := local.Run(ctx, "switch-client", "-t", host.Name); err != nil {
-		return fmt.Errorf("jump %s: %w", repo.Key(), err)
+		return fmt.Errorf("jump %s/%s: %w", host.Name, session, err)
 	}
-	_, err = local.Run(ctx, "select-window", "-t", Target(host.Name, repo.Label))
+	_, err := local.Run(ctx, "select-window", "-t", Target(host.Name, session))
 	return err
 }
 
@@ -86,6 +92,13 @@ func JumpRemote(ctx context.Context, local, remote Runner, host config.HostConfi
 // missing one is added, a dead one — ssh exited — is respawned in place, and a
 // live one is left alone.
 func ensureViewWindow(ctx context.Context, local Runner, host config.HostConfig, session string) error {
+	return ensureViewWindowWith(ctx, local, host, session, ViewAttachCommand(host, session))
+}
+
+// ensureViewWindowWith is ensureViewWindow with the attach command chosen by
+// the caller: the creating form for a jump, the attach-only form for
+// reaching an existing session.
+func ensureViewWindowWith(ctx context.Context, local Runner, host config.HostConfig, session, command string) error {
 	windows, err := ListWindows(ctx, local, host.Name)
 	if err != nil {
 		return fmt.Errorf("read view: %w", err)
@@ -97,9 +110,9 @@ func ensureViewWindow(ctx context.Context, local Runner, host config.HostConfig,
 		if !w.Dead {
 			return nil
 		}
-		_, err := local.Run(ctx, ViewRespawnArgs(host, session)...)
+		_, err := local.Run(ctx, "respawn-window", "-k", "-t", Target(host.Name, session), command)
 		return err
 	}
-	_, err = local.Run(ctx, ViewWindowArgs(host, session)...)
+	_, err = local.Run(ctx, "new-window", "-d", "-t", host.Name+":", "-n", session, command)
 	return err
 }
