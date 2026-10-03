@@ -70,6 +70,8 @@ type Model struct {
 	hosts          map[string]hostState             // remote host → last poll and link state
 	hermes         map[string]sources.HermesStatus  // hermes label → last status
 	hermesAt       time.Time
+	spine          *sources.SpineStatus // last spine bearings read; nil before the first
+	spineAt        time.Time
 	sessionPreview string // the grid's preview of the selected local session
 
 	// Local host observation beyond the session list: pane records, the
@@ -192,6 +194,7 @@ func (m Model) Init() tea.Cmd {
 		m.remoteTick(),
 		m.fetchHosts(),
 		m.fetchHermes(),
+		m.fetchSpine(),
 	)
 }
 
@@ -323,6 +326,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.recomputeAttention())
 
+	case spineDataMsg:
+		st := msg.Status
+		m.spine = &st
+		m.spineAt = msg.At
+		cmds = append(cmds, m.recomputeAttention())
+
 	case gitDataMsg:
 		m.repos.Repos = msg.Repos
 		m.repos.Loading = false
@@ -397,6 +406,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchTmux(),
 			m.fetchGit(),
 			m.fetchProcesses(),
+			m.fetchSpine(),
 			m.localTick(),
 		)
 		if m.view == ViewProcesses && m.mode != ModeConfirm {

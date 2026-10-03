@@ -191,6 +191,8 @@ func actionLabel(i sources.AttentionItem) string {
 		return "Gateway details"
 	case sources.ActionOpenProject:
 		return "Project details"
+	case sources.ActionOpenSpine:
+		return "Open spine"
 	}
 	return ""
 }
@@ -327,6 +329,10 @@ func (a *attentionModel) placeholderLines(inner int, narrow bool) []string {
 func (a *attentionModel) rowLines(r sources.AttentionItem, inner int, narrow, selected bool, now time.Time) []string {
 	title := clean(r.Title)
 	detail := clean(r.Detail)
+	if r.Kind == sources.AttentionSpine && r.Project != "" {
+		// A spine ask names its repository too: goals share names across repos.
+		detail = clean(r.Project) + " · " + detail
+	}
 	age := ageOf(r.FirstObserved, now)
 	action := actionLabel(r)
 	style := lipgloss.NewStyle().Foreground(ColorFg)
@@ -463,6 +469,11 @@ func (a *attentionModel) detailView(width, height int, now time.Time) string {
 	case "process":
 		add("process", t.Process)
 		add("window", t.WindowID)
+	case "spine":
+		add("goal", t.Goal)
+		add("stream", t.Stream)
+		add("agent", t.Agent)
+		lines = append(lines, "", "  "+AccentText.Render("Enter")+" "+MutedText.Render("switch to the spine session; answer there"))
 	}
 	if len(lines) > height-1 {
 		lines = lines[:height-1]

@@ -25,6 +25,8 @@ func (m Model) attentionInput() sources.AttentionInput {
 		GitHub:      m.github,
 		GitHubAt:    m.githubAt,
 		HermesAt:    m.hermesAt,
+		Spine:       m.spine,
+		SpineAt:     m.spineAt,
 	}
 
 	local := sources.HostReport{
@@ -86,7 +88,7 @@ func (m *Model) recomputeAttention() tea.Cmd {
 
 // refreshAll re-polls every source, coalescing into the existing commands.
 func (m Model) refreshAll() tea.Cmd {
-	return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub(), m.fetchProcesses(), m.fetchHosts(), m.fetchHermes())
+	return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub(), m.fetchProcesses(), m.fetchHosts(), m.fetchHermes(), m.fetchSpine())
 }
 
 // openAttention shows the queue over every host, whatever grid was open.
@@ -145,6 +147,8 @@ func (m *Model) handleAttentionKey(msg tea.KeyMsg) tea.Cmd {
 					return nil
 				}
 				return m.attachCmd(itemTarget(item))
+			case "spine":
+				return m.openSpine()
 			}
 		}
 		return nil
@@ -209,6 +213,8 @@ func (m *Model) attentionAction(item sources.AttentionItem) tea.Cmd {
 		return m.attachCmd(itemTarget(item))
 	case sources.ActionInspectProcess:
 		return m.openProcessesFor(item.Target.Host, item.Target.Session, item.Target.Process)
+	case sources.ActionOpenSpine:
+		return m.openSpine()
 	default:
 		i := item
 		m.attn.detail = &i

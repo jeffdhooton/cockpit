@@ -418,10 +418,10 @@ func TestPreviewSkippedAtPhoneWidth(t *testing.T) {
 }
 
 func TestGridKeysMoveCursor(t *testing.T) {
-	m := gridTestModel(44, 24) // 2 cols; targets: my-app, scry (running), dotfiles (dormant)
+	m := gridTestModel(44, 24) // 2 cols; targets: my-app, scry (running), spine, dotfiles (dormant)
 	targets := m.gridTargets()
-	if len(targets) != 3 {
-		t.Fatalf("setup: got %d targets, want 3", len(targets))
+	if len(targets) != 4 {
+		t.Fatalf("setup: got %d targets, want 4", len(targets))
 	}
 
 	m.handleGridKey(keyMsg("l"))
@@ -430,13 +430,18 @@ func TestGridKeysMoveCursor(t *testing.T) {
 	}
 
 	m.handleGridKey(keyMsg("j"))
-	if m.gridCursor != targets[2].Label {
-		t.Errorf("after j onto short final row: cursor = %q, want %q", m.gridCursor, targets[2].Label)
+	if m.gridCursor != targets[3].Label {
+		t.Errorf("after j: cursor = %q, want %q", m.gridCursor, targets[3].Label)
 	}
 
 	m.handleGridKey(keyMsg("k"))
+	if m.gridCursor != targets[1].Label {
+		t.Errorf("after k: cursor = %q, want %q", m.gridCursor, targets[1].Label)
+	}
+
+	m.handleGridKey(keyMsg("h"))
 	if m.gridCursor != targets[0].Label {
-		t.Errorf("after k: cursor = %q, want %q", m.gridCursor, targets[0].Label)
+		t.Errorf("after h: cursor = %q, want %q", m.gridCursor, targets[0].Label)
 	}
 
 	m.handleGridKey(keyMsg("h"))
@@ -478,8 +483,16 @@ func TestGridEnterOnEmptyGridIsSafe(t *testing.T) {
 	m := gridTestModel(44, 24)
 	m.sessions.Sessions = nil
 	m.repos.Repos = nil
-	if cmd := m.enterTarget(m.gridTargets(), 0); cmd != nil {
+	// With nothing else, the grid holds only the spine tile.
+	targets := m.gridTargets()
+	if len(targets) != 1 || targets[0].Spine == nil {
+		t.Fatalf("an empty grid keeps only the spine tile, got %v", labels(targets))
+	}
+	if cmd := m.enterTarget(nil, 0); cmd != nil {
 		t.Error("Enter on an empty grid should return nil, not a cmd")
+	}
+	if cmd := m.enterTarget(targets, 1); cmd != nil {
+		t.Error("Enter past the last tile should return nil, not a cmd")
 	}
 }
 

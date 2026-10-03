@@ -51,6 +51,10 @@ type Target struct {
 	// tile would otherwise repeat the host the panel title already names, and
 	// on a phone the prefix costs the cells the label needs.
 	Display string
+	// Spine is set on the one tile for the spine fleet. It summarises
+	// `spine bearings --json`; Enter switches to the spine session, and a
+	// local session of that name is folded into it rather than drawn twice.
+	Spine *sources.SpineStatus
 }
 
 // Running reports whether the target has a live tmux session behind it.
@@ -287,13 +291,22 @@ func MoveGridCursor(idx, count, cols, dx, dy int) int {
 	return idx
 }
 
+// cursorID is what the grid cursor remembers a tile by: its label, except
+// the spine tile, whose label a configured repo named spine would share.
+func (t Target) cursorID() string {
+	if t.Spine != nil {
+		return spineCursor
+	}
+	return t.Label
+}
+
 // resolveGridCursor turns the stored cursor label into an index. When the label
 // is gone — session died, repo dropped from config — it clamps the previous
 // index into range so the selection lands on a neighbour instead of jumping to
 // the top.
 func resolveGridCursor(targets []Target, label string, prev int) int {
 	for i := range targets {
-		if targets[i].Label == label {
+		if targets[i].cursorID() == label {
 			return i
 		}
 	}
@@ -316,6 +329,8 @@ func resolveGridCursor(targets []Target, label string, prev int) int {
 func tileMarker(t Target) string {
 	glyph, v := "●", VariantMuted
 	switch {
+	case t.Spine != nil:
+		return spineMarker(t.Spine)
 	case t.HostBox:
 		switch {
 		case !t.Polled:
@@ -374,7 +389,7 @@ func renderTile(t Target, width int, selected, compact bool) string {
 	switch {
 	case selected:
 		nameStyle = BoldText.Foreground(ColorAccent)
-	case !t.Running():
+	case !t.Running() && t.Spine == nil:
 		nameStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 	}
 
@@ -393,11 +408,20 @@ func renderTile(t Target, width int, selected, compact bool) string {
 	// marker gets the cell beside it. Branch, dirty counts and the process
 	// indicator do not survive the trip.
 	if compact {
+		if t.Spine != nil {
+			// The needs-you count is the one number worth a phone's line.
+			return box.Height(1).MaxHeight(gridCompactTileH).
+				Render(key + tileMarker(t) + " " + nameStyle.Render(Truncate(t.Name(), nameW-4)) + " " + spineCompactCount(t.Spine))
+		}
 		return box.Height(1).MaxHeight(gridCompactTileH).
 			Render(key + tileMarker(t) + " " + nameStyle.Render(Truncate(t.Name(), nameW-2)))
 	}
 
 	name := key + nameStyle.Render(Truncate(t.Name(), nameW))
+	if t.Spine != nil {
+		status, detail := spineTileLines(t.Spine, inner)
+		return box.Height(3).MaxHeight(gridTileH).Render(name + "\n" + status + "\n" + detail)
+	}
 
 	// Shape carries session existence: a hollow ring means there is nothing to
 	// attach to, while every live session keeps the filled status dot.
@@ -611,7 +635,7 @@ func insertHostBoxes(targets, boxes []Target) []Target {
 	}
 	at := len(targets)
 	for i := range targets {
-		if !targets[i].Running() && targets[i].Hermes == nil {
+		if !targets[i].Running() && targets[i].Hermes == nil && targets[i].Spine == nil {
 			at = i
 			break
 		}
@@ -619,6 +643,22 @@ func insertHostBoxes(targets, boxes []Target) []Target {
 	out := make([]Target, 0, len(targets)+len(boxes))
 	out = append(out, targets[:at]...)
 	out = append(out, boxes...)
+	return append(out, targets[at:]...)
+}
+
+// insertSpine places the spine tile right after the live sessions, beside
+// them and ahead of any gateway, host box or dormant repo.
+func insertSpine(targets []Target, spine Target) []Target {
+	at := len(targets)
+	for i := range targets {
+		if !targets[i].Running() {
+			at = i
+			break
+		}
+	}
+	out := make([]Target, 0, len(targets)+1)
+	out = append(out, targets[:at]...)
+	out = append(out, spine)
 	return append(out, targets[at:]...)
 }
 
@@ -631,7 +671,12 @@ func (m Model) gridTargets() []Target {
 	var sessions []sources.TmuxSession
 	var repos []sources.GitRepoStatus
 	if m.gridHost == "" {
-		sessions = append(sessions, m.sessions.Sessions...)
+		// The spine session belongs to the spine tile, not a tile of its own.
+		for _, s := range m.sessions.Sessions {
+			if s.Name != spineSession {
+				sessions = append(sessions, s)
+			}
+		}
 		repos = append(repos, m.repos.Repos...)
 	} else if _, declared := m.config.Host(m.gridHost); declared {
 		// An undeclared host draws an empty grid rather than its last-known
@@ -672,6 +717,7 @@ func (m Model) gridTargets() []Target {
 
 	targets := BuildTargets(sessions, repos, statuses, m.config.General.SessionName, hermes...)
 	if m.gridHost == "" {
+		targets = insertSpine(targets, m.spineTarget())
 		targets = insertHostBoxes(targets, m.hostBoxes())
 	}
 	for i := range targets {
@@ -766,8 +812,21 @@ func (m Model) gridLocalSession() string {
 	return t.Label
 }
 
+// gridSelected is the target under the grid cursor.
+func (m Model) gridSelected() (Target, bool) {
+	targets := m.gridTargets()
+	idx := resolveGridCursor(targets, m.gridCursor, m.gridIndex)
+	if idx < 0 || idx >= len(targets) {
+		return Target{}, false
+	}
+	return targets[idx], true
+}
+
 // renderPreviewPanel renders the capture-pane output for the selected session.
 func (m Model) renderPreviewPanel(height int) string {
+	if t, ok := m.gridSelected(); ok && t.Spine != nil {
+		return RenderPanel("Spine fleet", spinePreview(t.Spine, m.now(), m.width-4, height-3), m.width, height, false)
+	}
 	name := m.gridLocalSession()
 	if name == "" || m.sessionPreview == "" {
 		return RenderPanel("Preview", MutedText.Render("(no preview)"), m.width, height, false)
@@ -799,7 +858,10 @@ func (m *Model) setGridCursor(targets []Target, idx int) {
 		return
 	}
 	m.gridIndex = idx
-	m.gridCursor = targets[idx].Label
+	m.gridCursor = targets[idx].cursorID()
+	if targets[idx].Spine != nil {
+		return
+	}
 	for i, s := range m.sessions.Sessions {
 		if s.Name == targets[idx].Label {
 			m.sessions.Cursor = i
@@ -821,6 +883,9 @@ func (m *Model) enterTarget(targets []Target, idx int) tea.Cmd {
 	if t.HostBox {
 		m.openHost(t.Label)
 		return nil
+	}
+	if t.Spine != nil {
+		return m.openSpine()
 	}
 
 	// A Hermes tile opens a shell on its host. Without a host it is
@@ -1004,7 +1069,7 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 			m.transientTimer = 3
 			return tea.Tick(time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 		}
-		if t.Hermes != nil && !t.Running() {
+		if (t.Hermes != nil && !t.Running()) || t.Spine != nil {
 			return nil
 		}
 		return m.openProcessesFor(t.Host, t.Label, "")
@@ -1028,7 +1093,7 @@ func (m *Model) handleGridKey(msg tea.KeyMsg) tea.Cmd {
 		m.updateSearchResults()
 		return nil
 	case "r":
-		return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub())
+		return tea.Batch(m.fetchTmux(), m.fetchGit(), m.fetchGitHub(), m.fetchSpine())
 	case "q":
 		return tea.Quit
 	}

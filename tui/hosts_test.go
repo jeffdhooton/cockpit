@@ -68,8 +68,8 @@ func TestGridTargetsIncludeRemoteHosts(t *testing.T) {
 
 	targets := m.gridTargets()
 	keys := labels(targets)
-	if len(targets) != 2 {
-		t.Fatalf("the root wants the local session and one box for mini, got %v", keys)
+	if len(targets) != 3 {
+		t.Fatalf("the root wants the local session, the spine tile and one box for mini, got %v", keys)
 	}
 
 	// The host's own tiles are one level down, inside its box.
