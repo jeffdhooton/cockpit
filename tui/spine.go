@@ -116,8 +116,11 @@ func plural(n int, word string) string {
 	return word + "s"
 }
 
-// spinePreview renders the snapshot's four sections for the preview panel.
-func spinePreview(st *sources.SpineStatus, now time.Time, width int) string {
+// spinePreview renders the snapshot's four sections for the preview panel in
+// at most maxLines lines (maxLines <= 0 means no limit). When the full layout
+// does not fit, every section keeps its heading and the items share whatever
+// rows are left, so no section is ever clipped out of sight.
+func spinePreview(st *sources.SpineStatus, now time.Time, width, maxLines int) string {
 	if st == nil || (st.Snapshot == nil && st.Err == nil) {
 		return MutedText.Render("reading spine bearings…")
 	}
@@ -129,40 +132,128 @@ func spinePreview(st *sources.SpineStatus, now time.Time, width int) string {
 		return WarningText.Render(clip("⚠ spine unreadable: "+reason, width))
 	}
 	snap := st.Snapshot
-	var lines []string
-	section := func(title string, items []sources.SpineItem, now bool) {
-		if len(lines) > 0 {
-			lines = append(lines, "")
-		}
-		lines = append(lines, BoldText.Render(title))
-		if len(items) == 0 {
-			lines = append(lines, "  "+MutedText.Render("none"))
-			return
-		}
-		for _, it := range items {
-			lines = append(lines, "  "+clip(spineItemLine(it), width-2))
-			if now && it.Now != "" {
-				lines = append(lines, "    "+MutedText.Render(clip("Now: "+clean(it.Now), width-4)))
-			}
-		}
-	}
-	section("Needs you", snap.NeedsYou, false)
-	section("Underway", snap.Underway, true)
-	section("Charted next", snap.ChartedNext, false)
 	var landed []sources.SpineItem
 	for _, it := range snap.Landed {
 		if it.At.IsZero() || now.Sub(it.At) <= 24*time.Hour {
 			landed = append(landed, it)
 		}
 	}
-	section("Landed (last 24h)", landed, false)
-	if len(snap.Errors) > 0 {
-		lines = append(lines, "")
-		for _, e := range snap.Errors {
-			lines = append(lines, WarningText.Render(clip("⚠ "+clean(e), width)))
+	sections := []spineSection{
+		{"Needs you", snap.NeedsYou, false},
+		{"Underway", snap.Underway, true},
+		{"Charted next", snap.ChartedNext, false},
+		{"Landed (last 24h)", landed, false},
+	}
+	var errs []string
+	for _, e := range snap.Errors {
+		errs = append(errs, WarningText.Render(clip("⚠ "+clean(e), width)))
+	}
+
+	full := spineFullPreview(sections, errs, width)
+	if maxLines <= 0 || len(full) <= maxLines {
+		return strings.Join(full, "\n")
+	}
+	return strings.Join(spineFittedPreview(sections, errs, width, maxLines), "\n")
+}
+
+type spineSection struct {
+	title string
+	items []sources.SpineItem
+	now   bool
+}
+
+// lines is the item's own row plus, for underway items, its Now line.
+func (s spineSection) lines(it sources.SpineItem, width int) []string {
+	out := []string{"  " + clip(spineItemLine(it), width-2)}
+	if s.now && it.Now != "" {
+		out = append(out, "    "+MutedText.Render(clip("Now: "+clean(it.Now), width-4)))
+	}
+	return out
+}
+
+func spineFullPreview(sections []spineSection, errs []string, width int) []string {
+	var lines []string
+	for i, sec := range sections {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, BoldText.Render(sec.title))
+		if len(sec.items) == 0 {
+			lines = append(lines, "  "+MutedText.Render("none"))
+			continue
+		}
+		for _, it := range sec.items {
+			lines = append(lines, sec.lines(it, width)...)
 		}
 	}
-	return strings.Join(lines, "\n")
+	if len(errs) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, errs...)
+	}
+	return lines
+}
+
+// spineFittedPreview is the dense layout: one heading line per section that
+// carries its count (or "none"), then items handed out a row at a time across
+// the sections so a long Underway cannot starve Landed. With fewer rows than
+// sections it falls back to a single summary line naming all four.
+func spineFittedPreview(sections []spineSection, errs []string, width, maxLines int) []string {
+	if maxLines < len(sections) {
+		parts := make([]string, len(sections))
+		for i, sec := range sections {
+			parts[i] = fmt.Sprintf("%s %d", sec.title, len(sec.items))
+			if len(sec.items) == 0 {
+				parts[i] = sec.title + " none"
+			}
+		}
+		return []string{clip(strings.Join(parts, " · "), width)}
+	}
+
+	left := maxLines - len(sections)
+	shown := make([][]string, len(sections))
+	counts := make([]int, len(sections))
+	for progressed := true; progressed && left > 0; {
+		progressed = false
+		for i, sec := range sections {
+			if counts[i] >= len(sec.items) {
+				continue
+			}
+			l := sec.lines(sec.items[counts[i]], width)
+			if len(l) > left {
+				l = l[:1] // the item row alone still fits; its Now line does not
+			}
+			if len(l) > left {
+				continue
+			}
+			shown[i] = append(shown[i], l...)
+			counts[i]++
+			left -= len(l)
+			progressed = true
+		}
+	}
+
+	var lines []string
+	for i, sec := range sections {
+		head := BoldText.Render(sec.title)
+		switch n := len(sec.items); {
+		case n == 0:
+			head += "  " + MutedText.Render("none")
+		case counts[i] < n:
+			head += MutedText.Render(fmt.Sprintf(" (%d, %d not shown)", n, n-counts[i]))
+		default:
+			head += MutedText.Render(fmt.Sprintf(" (%d)", n))
+		}
+		lines = append(lines, head)
+		lines = append(lines, shown[i]...)
+	}
+	for _, e := range errs {
+		if left <= 0 {
+			break
+		}
+		lines = append(lines, e)
+		left--
+	}
+	return lines
 }
 
 // spineItemLine names an item's repository, goal and stream before its title.

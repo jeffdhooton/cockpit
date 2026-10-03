@@ -825,7 +825,7 @@ func (m Model) gridSelected() (Target, bool) {
 // renderPreviewPanel renders the capture-pane output for the selected session.
 func (m Model) renderPreviewPanel(height int) string {
 	if t, ok := m.gridSelected(); ok && t.Spine != nil {
-		return RenderPanel("Spine fleet", spinePreview(t.Spine, m.now(), m.width-4), m.width, height, false)
+		return RenderPanel("Spine fleet", spinePreview(t.Spine, m.now(), m.width-4, height-3), m.width, height, false)
 	}
 	name := m.gridLocalSession()
 	if name == "" || m.sessionPreview == "" {

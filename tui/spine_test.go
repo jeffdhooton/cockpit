@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/jeffdhooton/cockpit/sources"
 )
@@ -143,7 +144,7 @@ func TestSpinePreviewShowsFourSections(t *testing.T) {
 
 	m = spineModel(t, 120, sources.SpineStatus{Snapshot: &sources.SpineSnapshot{}})
 	m.setGridCursor(m.gridTargets(), 2)
-	preview := spinePreview(m.spine, m.now(), 80)
+	preview := spinePreview(m.spine, m.now(), 80, 0)
 	if n := strings.Count(ansi.Strip(preview), "none"); n != 4 {
 		t.Errorf("every empty section says none, got %d:\n%s", n, preview)
 	}
@@ -152,7 +153,7 @@ func TestSpinePreviewShowsFourSections(t *testing.T) {
 func TestSpinePreviewDropsOldLanded(t *testing.T) {
 	st := spineFixture(t)
 	now := time.Date(2026, 10, 4, 14, 0, 0, 0, time.UTC) // 22h50m after one, 26h30m after the other
-	out := ansi.Strip(spinePreview(&st, now, 100))
+	out := ansi.Strip(spinePreview(&st, now, 100, 0))
 	if !strings.Contains(out, "Address form validates postcodes") || strings.Contains(out, "rss v1") {
 		t.Errorf("landed keeps the last 24 hours only:\n%s", out)
 	}
@@ -252,15 +253,64 @@ func TestSpinePreviewStripsControlSequences(t *testing.T) {
 		Underway: []sources.SpineItem{{Repo: "shop", Goal: "g", Kind: "goal", Title: "t", Now: "now" + esc}},
 		Errors:   []string{"notes: broken" + esc},
 	}}
-	out := spinePreview(&st, time.Now(), 200)
+	out := spinePreview(&st, time.Now(), 200, 0)
 	if strings.Contains(out, "pwned") || strings.Contains(out, "\x1b]") || strings.Contains(out, "\x1b[2J") || strings.Contains(out, "\x07") {
 		t.Errorf("preview passes control sequences through: %q", out)
 	}
 
 	bad := sources.SpineStatus{Err: errors.New("spine bearings: exit 1: oops" + esc)}
-	for _, s := range []string{spinePreview(&bad, time.Now(), 200), func() string { a, b := spineTileLines(&bad, 60); return a + b }()} {
+	for _, s := range []string{spinePreview(&bad, time.Now(), 200, 0), func() string { a, b := spineTileLines(&bad, 60); return a + b }()} {
 		if strings.Contains(s, "pwned") || strings.Contains(s, "\x1b]") || strings.Contains(s, "\x1b[2J") {
 			t.Errorf("unreadable reason passes control sequences through: %q", s)
 		}
+	}
+}
+
+// At an ordinary 120x24 terminal the preview panel has a handful of rows; the
+// four sections must all still be on screen, full fleet or empty.
+func TestSpinePreviewFitsA120x24Terminal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		st   sources.SpineStatus
+		want []string
+	}{
+		{"fixture", spineFixture(t), []string{"Needs you (1)", "Underway (", "Charted next (", "Landed (last 24h) ("}},
+		{"empty", sources.SpineStatus{Snapshot: &sources.SpineSnapshot{}}, []string{"Needs you  none", "Underway  none", "Charted next  none", "Landed (last 24h)  none"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := spineModel(t, 120, tc.st)
+			next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+			m = next.(Model)
+			targets := m.gridTargets()
+			m.setGridCursor(targets, spineIndex(t, targets))
+			view := ansi.Strip(m.View())
+			if n := len(strings.Split(view, "\n")); n > 24 {
+				t.Errorf("view is %d rows, taller than the terminal", n)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(view, want) {
+					t.Errorf("preview missing %q at 120x24\n%s", want, view)
+				}
+			}
+		})
+	}
+}
+
+func TestSpineFittedPreviewSharesRowsAndSummarisesWhenTiny(t *testing.T) {
+	st := spineFixture(t)
+	now := time.Date(2026, 10, 3, 18, 0, 0, 0, time.UTC)
+	for rows := 1; rows <= 12; rows++ {
+		out := ansi.Strip(spinePreview(&st, now, 120, rows))
+		if n := len(strings.Split(out, "\n")); n > rows {
+			t.Errorf("%d rows: rendered %d lines\n%s", rows, n, out)
+		}
+		for _, want := range []string{"Needs you", "Underway", "Charted next", "Landed"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%d rows: missing %q\n%s", rows, want, out)
+			}
+		}
+	}
+	if out := ansi.Strip(spinePreview(&st, now, 120, 8)); !strings.Contains(out, "Allow up to $5") || !strings.Contains(out, "search v1") {
+		t.Errorf("spare rows go to every section in turn:\n%s", out)
 	}
 }
