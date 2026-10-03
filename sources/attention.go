@@ -17,6 +17,7 @@ const (
 	AttentionProcessExited AttentionKind = "process_exited"
 	AttentionCIFailed      AttentionKind = "ci_failed"
 	AttentionHermesDown    AttentionKind = "hermes_down"
+	AttentionSpine         AttentionKind = "spine"
 	AttentionUnpushed      AttentionKind = "unpushed"      // housekeeping
 	AttentionStaleSession  AttentionKind = "stale_session" // housekeeping
 )
@@ -36,6 +37,7 @@ const (
 	SourceProcess = "process"
 	SourceGitHub  = "github"
 	SourceHermes  = "hermes"
+	SourceSpine   = "spine"
 	SourceGit     = "git"
 	SourceTmux    = "tmux"
 )
@@ -49,12 +51,13 @@ const (
 	ActionViewCI         = "view_ci"         // CI details
 	ActionViewGateway    = "view_gateway"    // hermes details
 	ActionOpenProject    = "open_project"    // project details
+	ActionOpenSpine      = "open_spine"      // switch to the spine session
 )
 
 // AttentionTarget is the typed, validated destination of an item. Display
 // names are never targets; identities are.
 type AttentionTarget struct {
-	Type       string `json:"type"` // pane, session, process, ci, hermes, project
+	Type       string `json:"type"` // pane, session, process, ci, hermes, spine, project
 	Host       string `json:"host,omitempty"`
 	Generation string `json:"generation,omitempty"`
 	Session    string `json:"session,omitempty"`
@@ -69,6 +72,9 @@ type AttentionTarget struct {
 	RunID      string `json:"run_id,omitempty"`
 	RunURL     string `json:"run_url,omitempty"`
 	Label      string `json:"label,omitempty"` // hermes label
+	Goal       string `json:"goal,omitempty"`  // spine goal
+	Stream     string `json:"stream,omitempty"`
+	Agent      string `json:"agent,omitempty"`
 }
 
 // AttentionItem is one row of the queue.
@@ -151,6 +157,8 @@ type AttentionInput struct {
 	GitHubAt    time.Time
 	Hermes      []HermesStatus
 	HermesAt    time.Time
+	Spine       *SpineStatus // nil when the source is not polled
+	SpineAt     time.Time
 	Now         time.Time
 }
 
@@ -163,6 +171,7 @@ func DeriveAttention(in AttentionInput) AttentionReport {
 	}
 	rep.deriveGitHub(in)
 	rep.deriveHermes(in)
+	rep.deriveSpine(in)
 	for _, c := range rep.Coverage {
 		if c.Observation == ObservationUnavailable {
 			rep.Unavailable++
@@ -461,6 +470,51 @@ func (rep *AttentionReport) deriveHermes(in AttentionInput) {
 			Observation: ObservationFresh,
 			ObservedAt:  in.HermesAt,
 			Target:      AttentionTarget{Type: "hermes", Host: h.Host, Label: h.Label},
+		})
+	}
+}
+
+func (rep *AttentionReport) deriveSpine(in AttentionInput) {
+	if in.Spine == nil {
+		return
+	}
+	cov := Coverage{Source: SourceSpine, Scope: "spine", Observation: ObservationFresh, ObservedAt: in.SpineAt}
+	if !in.Spine.Readable() {
+		cov.Observation = ObservationUnavailable
+		cov.Detail = "unavailable"
+		if in.Spine.Err != nil {
+			cov.Detail += ": " + in.Spine.Err.Error()
+		}
+		rep.Coverage = append(rep.Coverage, cov)
+		return
+	}
+	n := len(in.Spine.Snapshot.NeedsYou)
+	cov.Detail = fmt.Sprintf("%d %s needs you", n, plural(n, "item"))
+	rep.Coverage = append(rep.Coverage, cov)
+	for _, it := range in.Spine.Snapshot.NeedsYou {
+		title := it.Goal
+		if title == "" {
+			title = it.Repo
+		}
+		title += " · " + it.Title
+		detail := it.Kind
+		if it.Agent != "" {
+			detail += " from " + it.Agent
+		}
+		rep.Items = append(rep.Items, AttentionItem{
+			ID:          "spine:" + strings.Join([]string{it.Repo, it.Goal, it.Stream, it.Agent, it.Title}, "/"),
+			Kind:        AttentionSpine,
+			Priority:    1,
+			Project:     it.Repo,
+			Title:       title,
+			Detail:      detail,
+			Action:      ActionOpenSpine,
+			Source:      SourceSpine,
+			Observation: ObservationFresh,
+			ObservedAt:  in.SpineAt,
+			Target: AttentionTarget{
+				Type: "spine", Project: it.Repo, Goal: it.Goal, Stream: it.Stream, Agent: it.Agent,
+			},
 		})
 	}
 }

@@ -268,3 +268,30 @@ func TestFilterAttentionMatchesHostProjectAndKind(t *testing.T) {
 		t.Errorf("local host filter: %+v", got)
 	}
 }
+
+func TestSpineNeedsYouNamesRepoGoalAndTitle(t *testing.T) {
+	st := fixtureSpine(t)
+	now := time.Unix(1_700_000_000, 0)
+	rep := DeriveAttention(AttentionInput{Spine: &st, SpineAt: now, Now: now})
+	if len(rep.Items) != 1 {
+		t.Fatalf("items = %+v", rep.Items)
+	}
+	it := rep.Items[0]
+	if it.Kind != AttentionSpine || it.Target.Type != "spine" || it.Project != "shop" ||
+		!strings.Contains(it.Title, "checkout-v1") || !strings.Contains(it.Title, "Allow up to $5") ||
+		!strings.HasPrefix(it.ID, "spine:") || !it.Actionable() {
+		t.Errorf("item = %+v", it)
+	}
+	if len(rep.Coverage) != 1 || rep.Coverage[0].Source != SourceSpine || rep.Unavailable != 0 {
+		t.Errorf("coverage = %+v", rep.Coverage)
+	}
+}
+
+func TestSpineUnreadableIsCoverageWithReason(t *testing.T) {
+	st := SpineStatus{Err: ErrSpineNotFound}
+	rep := DeriveAttention(AttentionInput{Spine: &st})
+	if len(rep.Items) != 0 || rep.Unavailable != 1 || rep.Coverage[0].Observation != ObservationUnavailable ||
+		!strings.Contains(rep.Coverage[0].Detail, "not found") {
+		t.Errorf("rep = %+v", rep)
+	}
+}
